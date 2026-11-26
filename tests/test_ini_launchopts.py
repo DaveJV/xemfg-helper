@@ -70,3 +70,10 @@ def test_steam_merge_cases():
     assert lo.override_mode("PROTON_DISABLE_NVAPI=1\nWINEDLLOVERRIDES=\"dxgi,dinput8=n,b\"", "dxgi") == "n,b"
     assert lo.forbidden_vars("PROTON_USE_OPTISCALER=1 %command%") == ["PROTON_USE_OPTISCALER"]
     assert lo.forbidden_vars("PROTON_USE_OPTISCALER=0 %command%") == []
+
+
+def test_existing_override_left_verbatim():
+    text = 'PROTON_DISABLE_NVAPI=1\nWINEDLLOVERRIDES="dxgi,dinput8=n,b"'
+    assert lo.faugus_apply(text, "dxgi", "n,b") == text
+    assert lo.steam_apply('WINEDLLOVERRIDES="dxgi,dinput8=n,b" %command%', "dxgi", "n,b") == \
+        'WINEDLLOVERRIDES="dxgi,dinput8=n,b" %command%'

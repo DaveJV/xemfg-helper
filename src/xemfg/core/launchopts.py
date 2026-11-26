@@ -51,6 +51,9 @@ def _unquote(v: str) -> tuple[str, str]:
 
 def _set_override(value: str | None, dll: str, mode: str | None) -> str:
     items = parse_overrides(value or "")
+    current = next((m for n, m in items if n.lower() == dll.lower()), None)
+    if value and (current == mode if mode is not None else current is None):
+        return value  # already as wanted: keep the user's exact spelling and order
     items = [(n, m) for n, m in items if n.lower() != dll.lower()]
     if mode is not None:
         items.append((dll, mode))

@@ -194,7 +194,8 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
     new_state.files = files
 
     # ---- OptiScaler.ini
-    _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, backup_dir)
+    _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, backup_dir,
+              existing_setup=bool(report.optiscaler_proxy))
 
     # ---- launch options
     _plan_launch(ctx, plan, game, state, new_state, opts, backend)
@@ -261,7 +262,8 @@ def _revert_file(plan: Plan, exe_dir: Path, rel: str, mf: ManagedFile) -> None:
             plan.delete(bk, note="backup no longer needed")
 
 
-def _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, backup_dir) -> None:
+def _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, backup_dir,
+              existing_setup: bool = False) -> None:
     import copy
 
     path = exe_dir / INI
@@ -293,7 +295,7 @@ def _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, bac
 
     before = ini_mod.Ini(base_text)
     wanted = copy.deepcopy(owned)
-    if fresh or req.reset_ini:
+    if (fresh and not (exists and existing_setup)) or req.reset_ini:
         # applied once, only over 'auto'/missing values; not owned, so repair never resets them
         for sec, kv in backend.fresh_install_ini_defaults(opts).items():
             for k, v in kv.items():
