@@ -76,11 +76,57 @@ def env_value(text: str, var: str) -> str | None:
 
 
 # ------------------------------------------------------------------ Faugus (newline separated)
+#
+# Faugus puts launch_arguments in front of umu-run and runs shlex.split on the whole command,
+# so line breaks are plain whitespace and quotes are removed. It never substitutes %command%.
+
+class LaunchOptsError(ValueError):
+    pass
+
+
+def _faugus_fix_command_lines(lines: list[str]) -> list[str]:
+    """Rewrite Steam-style lines ('VAR=x gamemoderun %command%') into Faugus form, one item per line.
+
+    Arguments after %command% are game arguments; in Faugus they belong in Game Arguments, not here.
+    """
+    out: list[str] = []
+    for line in lines:
+        if "%command%" not in line:
+            out.append(line)
+            continue
+        pre, post = line.split("%command%", 1)
+        if post.strip():
+            raise LaunchOptsError(
+                f"the Faugus launch arguments contain a Steam-style line with game arguments after %command% "
+                f"({line.strip()!r}); move '{post.strip()}' to the entry's Game Arguments in Faugus "
+                "and remove %command%, then run xemfg again")
+        try:
+            tokens = shlex.split(pre, posix=False)  # keeps quotes, so VAR="a b" stays one token
+        except ValueError as e:
+            raise LaunchOptsError(f"cannot read Faugus launch argument line {line.strip()!r}: {e}") from None
+        prefix: list[str] = []
+        for t in tokens:
+            if _ASSIGN.match(t) and not prefix:
+                out.append(t)
+            else:
+                prefix.append(t)  # a wrapper command such as gamemoderun, with its own arguments
+        if prefix:
+            out.append(" ".join(prefix))
+    return out
+
+
+def _faugus_value(v: str) -> str:
+    """Quote a value so Faugus's shlex.split gives it back unchanged (no-op for plain values)."""
+    return shlex.quote(v)
+
 
 def faugus_apply(text: str, dll: str, mode: str | None, env: dict[str, str | None] | None = None) -> str:
-    """Set (mode) or remove (None) `dll` in WINEDLLOVERRIDES; set/remove extra env vars (None = remove)."""
+    """Set (mode) or remove (None) `dll` in WINEDLLOVERRIDES; set/remove extra env vars (None = remove).
+
+    Raises LaunchOptsError when the text has a %command% line that cannot be converted safely.
+    """
     env = dict(env or {})
-    lines = text.split("\n") if text else []
+    lines = _faugus_fix_command_lines(text.split("\n") if text else [])
     out: list[str] = []
     seen_wdo = False
     for line in lines:
@@ -96,14 +142,14 @@ def faugus_apply(text: str, dll: str, mode: str | None, env: dict[str, str | Non
         if m and m.group(1) in env:
             v = env.pop(m.group(1))
             if v is not None:
-                out.append(f"{m.group(1)}={v}")
+                out.append(f"{m.group(1)}={_faugus_value(v)}")
             continue
         out.append(line)
     if not seen_wdo and mode is not None:
         out.append(f'{WDO}="{_set_override(None, dll, mode)}"')
     for k, v in env.items():
         if v is not None:
-            out.append(f"{k}={v}")
+            out.append(f"{k}={_faugus_value(v)}")
     return "\n".join(x for x in out if x.strip())
 
 

@@ -684,9 +684,12 @@ def _plan_launch(ctx: Context, plan: Plan, game: Game, state, new_state: GameSta
     cur = current or ""
     if target == "faugus":
         new = cur
-        if old.dll and old.dll != dll and not old.had_override and not _old_proxy_foreign(state, game):
-            new = lo.faugus_apply(new, old.dll, None)
-        new = lo.faugus_apply(new, dll, "n,b", {**env, **remove_env})
+        try:
+            if old.dll and old.dll != dll and not old.had_override and not _old_proxy_foreign(state, game):
+                new = lo.faugus_apply(new, old.dll, None)
+            new = lo.faugus_apply(new, dll, "n,b", {**env, **remove_env})
+        except lo.LaunchOptsError as e:
+            raise OpError(f"{game.title}: {e}") from None
     else:
         new = cur
         if old.dll and old.dll != dll and not old.had_override and not _old_proxy_foreign(state, game):

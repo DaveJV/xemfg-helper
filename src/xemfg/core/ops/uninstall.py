@@ -95,13 +95,16 @@ def _launch_removal(ctx: Context, plan: Plan, game: Game, st: GameState) -> None
     if taken_over:
         plan.notes.append(f"{proxy} now belongs to another mod, which needs its {ls.dll} launch override; "
                           "leaving it")
-    if ls.had_override or taken_over:
-        # the override was there before xemfg: leave it exactly as it is
-        plan.notes.append(f"{ls.dll} was already overridden before xemfg; leaving that override")
-        new = apply_fn(cur, ls.dll, lo.override_mode(cur, ls.dll), env) if lo.override_mode(cur, ls.dll) \
-            else apply_fn(cur, ls.dll, None, env)
-    else:
-        new = apply_fn(cur, ls.dll, None, env)
+    try:
+        if ls.had_override or taken_over:
+            # the override was there before xemfg: leave it exactly as it is
+            plan.notes.append(f"{ls.dll} was already overridden before xemfg; leaving that override")
+            new = apply_fn(cur, ls.dll, lo.override_mode(cur, ls.dll), env) if lo.override_mode(cur, ls.dll) \
+                else apply_fn(cur, ls.dll, None, env)
+        else:
+            new = apply_fn(cur, ls.dll, None, env)
+    except lo.LaunchOptsError as e:
+        raise OpError(f"{game.title}: {e}") from None
     if new == cur:
         return
     plan.texts.append(TextChange(f"{ls.target.capitalize()} launch options", f"- {cur!r}\n+ {new!r}"))
