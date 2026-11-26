@@ -1,0 +1,32 @@
+# Maintainer: DaveJV
+pkgname=xemfg
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Install and maintain XeMFG (MFG Unlocker + dashdogy OptiScaler) for Proton games (Steam, Faugus Launcher)"
+arch=('any')
+url="https://github.com/DaveJV/xemfg"
+license=('MIT')
+depends=('python' 'python-typer' 'python-textual' 'python-pefile' 'python-rapidfuzz' 'python-httpx'
+         'python-tomli-w' 'libarchive')
+optdepends=('7zip: fallback extractor'
+            'github-cli: authenticated GitHub API requests (avoids rate limits)')
+makedepends=('python-build' 'python-installer' 'python-hatchling')
+checkdepends=('python-pytest' 'python-pytest-asyncio')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  PYTHONPATH=src python -m pytest -q
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

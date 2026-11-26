@@ -91,7 +91,6 @@ class CompatReport:
     optiscaler_proxy: str | None = None  # proxy file name holding OptiScaler
     optiscaler_version: str | None = None
     cyboman: str | None = None  # variant name or "unknown cyboman"
-    wiki_notes: list[str] = field(default_factory=list)
 
     @property
     def installable(self) -> bool:
