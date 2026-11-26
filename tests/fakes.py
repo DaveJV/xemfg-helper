@@ -133,3 +133,37 @@ class World:
             p = root / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(data)
+
+
+class FakeFetcher:
+    """Serves canned responses; anything unknown raises FetchError (like a 403/404)."""
+
+    def __init__(self, routes: dict | None = None):
+        self.routes = dict(routes or {})
+        self.calls: list[str] = []
+
+    def _get(self, url):
+        from xemfg.core.net import FetchError
+
+        self.calls.append(url)
+        if url not in self.routes:
+            raise FetchError(f"403/404 (fake): {url}")
+        return self.routes[url]
+
+    def get_text(self, url, accept=None):
+        v = self._get(url)
+        return v.decode() if isinstance(v, bytes) else v
+
+    def get_json(self, url):
+        return self._get(url)
+
+    def final_url(self, url):
+        v = self._get(url)
+        return v
+
+    def download(self, url, dest, progress=None):
+        v = self._get(url)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(v if isinstance(v, bytes) else v.encode())
+        if progress:
+            progress(len(v), len(v))

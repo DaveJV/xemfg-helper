@@ -1,0 +1,66 @@
+# xemfg manifest: which files make up each XeMFG set, where they come from and their SHA-256.
+# Data only. `xemfg manifest refresh` resolves new sets from upstream and writes a user copy
+# to ~/.local/share/xemfg/manifest.toml; this bundled file is the starting point.
+schema = 1
+current = "v1.7.2"
+
+[sets."v1.7.2"]
+mfgu_version = "v1.7.2"
+created = "2026-11-23"
+notes = "MFG Unlocker V1.7.2 + dashdogy OptiScaler mfgunlocker-v1.7.2 + nightly-20261122; cyboman dll-2026-11-22"
+
+[sets."v1.7.2".files.nightly]
+repo = "optiscaler/OptiScaler-nightly"
+tag = "nightly-20261122"
+asset = "OptiScaler_v10.0.0-pre1_20261122_ab1f3d49.7z"
+sha256 = "6de71eb7fbef58ac3d6621c4afce4032b5c1de82be691c5118aa032452ad1b88"
+verified_by = "api-digest"
+
+[sets."v1.7.2".files.optiscaler]
+repo = "dashdogy/OptiScaler"
+tag = "mfgunlocker-v1.7.2"
+asset = "OptiScaler.dll"
+cache_name = "OptiScaler-mfgu.dll"
+sha256 = "473f7a3aef9632f797e7ab39492d5ad827822e80331103b53e12addee58a7bc1"
+verified_by = "api-digest"
+
+[sets."v1.7.2".files.mfgu]
+repo = "dashdogy/MFG-Unlocker"
+tag = "v1.7.2"
+asset = "MFGUnlocker-v1.7.2.zip"
+sha256 = "e002d624e3e7ba5cedab7211043c096fe8f555c30ff43500235a0686c7893f22"
+inner_sha256 = { "MFGUnlocker.dll" = "a9b1c01727fa72763bef8f604e44ec165ce1c98272de00719572b766a11cf28f" }
+verified_by = "sha256sums"
+
+[sets."v1.7.2".cyboman]
+repo = "zgauthier2000/fsr4-shader-performance-overrides"
+tag = "dll-2026-11-22"
+verified_by = "sha256sums"
+
+[sets."v1.7.2".cyboman.families.rx7000]
+archives = [
+  { asset = "fsr4.1.2-cyboman-rx7000-2026-11-22.7z", sha256 = "bcd719dca0bfb791aec8987bad796eceb65fc887b3d1d45a4969d7b55e6f195d" },
+  { asset = "fsr4.1.2-cyboman-rx7000-2026-11-22.zip", sha256 = "734ad03724776cd79e324e97bee8b55bd645a79f8f79e57b580d6a5bb3f8e826" },
+]
+dlls = { "exact" = "bc0d8dafcebc44f89b98febcd45442f02231f9a5d68f3265b364a04efb96b067", "lossy" = "46786d7d55eae02888d8b999774de5c0a504ce643a492037ce22dc5b72ef5e15", "4.1.2l-exact" = "07e549564506b74026ca5230b0af70fc33e49e6e2caed2d812a4eb8d1210affc", "4.1.2l-lossy" = "33c0c1c8bfc18d6c8cfcd9e2701edb72e661fbea096f93538d845616f305f6a4" }
+
+[sets."v1.7.2".cyboman.families.rx6000]
+archives = [
+  { asset = "fsr4.1.2-cyboman-rx6000-2026-11-22.7z", sha256 = "4dfb9c0cec1267aae759ed787aaac70d5dd0ef1a8125fcb8cef259bcc24f0181" },
+  { asset = "fsr4.1.2-cyboman-rx6000-2026-11-22.zip", sha256 = "2d81d93647e5c78c04401cf1437bd706e2c634ac72ed051817571c5c98be7d15" },
+]
+dlls = { "exact" = "08dfca86c15bb1d4e8d12740e68df6f054f12434f0d9d254a76387b86a621ea0", "lossy" = "8d462f462efd681aa26b51d6d1217864d907679fa4e6ff4e9381aecdae2ad4fb", "4.1.2l-exact" = "90e0117837dad1282ac4e788191a252314461e40b50f305648430028eb4d26f6", "4.1.2l-lossy" = "5f17b595b5abd9fbe19178f21912a4046bbe560929383ef889a43f7109110a43" }
+
+[sets."v1.7.2".cyboman.families.igpu-rdna3]
+archives = [
+  { asset = "fsr4.1.2-igpu-cyboman-rdna3-2026-11-22.7z", sha256 = "0443047f44cbfb9670dbc719e069df77be37cabcde02b76176d59f682d79091d" },
+  { asset = "fsr4.1.2-igpu-cyboman-rdna3-2026-11-22.zip", sha256 = "d56a5c473b33ad7197beb52a09ee6a664abe6d84c29044068564c27962912e7d" },
+]
+dlls = { "exact" = "d4502c7fce211f87d0121df13372c1970d3339ec541497e22251b2a20f82fdf4", "lossy" = "4f96e82fa3334f958b7f9cd2aec36c056c1b51664ebb80593e3326680db966dd", "4.1.2l-exact" = "23f6f431a31064f9e5f657216786f1148014b44b99be1252169eb34d24ab1ca8", "4.1.2l-lossy" = "29785bbb18e2f32a5574138b635ff7ace8dd3c4d1eebe469036d9e6e3343b8db" }
+
+[sets."v1.7.2".cyboman.families.igpu-rdna2]
+archives = [
+  { asset = "fsr4.1.2-igpu-cyboman-rdna2-2026-11-22.7z", sha256 = "8dd65d22b20f968f0d6529716cbcd05b12ca93d8e543f1e878fc5e08bbb1099c" },
+  { asset = "fsr4.1.2-igpu-cyboman-rdna2-2026-11-22.zip", sha256 = "882e92490c46a37f4a63b60897f794b2016020e69d9a41a35ca8cf1238bf917a" },
+]
+dlls = { "exact" = "d30397318cbd0652dc4737b6be79242a5ae7eac3995870b28cf75cfc7cb4c4b1", "lossy" = "d376cebf14d055f906ea3b17296fa7d59d52e2fc8626c488e63fd4197aa06433", "4.1.2l-exact" = "b0bcbcac5b81b7b6cf1718f092bda066e00e5a4bba1f260c4c3931efa25a7c07", "4.1.2l-lossy" = "851b95d11dd007691f3743999f634e5ce20816843d6c2b63f31be0f65ed9f2a9" }
