@@ -28,8 +28,9 @@ Launcher games itself, sets everything up in one step and keeps it up to date.
    AMD's SDK repository and are checked against hashes xemfg ships. If a release publishes no hash, xemfg
    uses the hash of the first download.
 5. **Installs.** Next to the game's exe it adds an `OptiScaler` folder with the MFG Unlocker plugin and the
-   FSR4 DLL, a small loader DLL (`dxgi.dll` by default) and OptiScaler's settings file. Any game file it
-   replaces is backed up first, and uninstalling puts it back.
+   FSR4 DLL, a small loader DLL (`dxgi.dll` by default) and OptiScaler's settings file. If another mod such
+   as ReShade already uses that name, it asks for another one. It never overwrites another mod's file.
+   Any game file it replaces is backed up first, and uninstalling puts it back.
 6. **Sets the launch option** in Steam or Faugus Launcher so Proton loads OptiScaler. Your other launch
    options stay as they are.
 

@@ -97,3 +97,24 @@ async def test_tui_banner_shows_new_and_broken(world, tmp_path):
         banner = str(app.query_one("#banner").render())
         assert "Newcomer" in banner and "Alpha" in banner
         assert not app.query_one("#banner").has_class("hidden")
+
+
+async def test_tui_asks_for_a_free_proxy_name(world, tmp_path):
+    from fakes import RESHADE_DLL
+
+    m, f = setup_sets(world)
+    world.faugus_game("a", "Alpha", tmp_path / "A", {**TIER_FILES["native"], "dxgi.dll": RESHADE_DLL})
+    app = XemfgApp(factory(world, f))
+    async with app.run_test(size=(160, 50)) as pilot:
+        await settle(app, pilot)
+        await pilot.click("#select-native")
+        await pilot.click("#install-selected")
+        await wait_for_screen(app, pilot, PickScreen)  # FSR4 DLL
+        await pilot.press("enter")
+        pick = await wait_for_screen(app, pilot, PickScreen)  # the proxy name
+        assert "dxgi.dll already belongs to ReShade" in pick.prompt and pick.options[0] == "winmm.dll"
+        await pilot.press("down", "enter")
+        await wait_for_screen(app, pilot, PlanScreen)
+        await pilot.click("#ok")
+        await settle(app, pilot)
+    assert (tmp_path / "A/version.dll").exists() and (tmp_path / "A/dxgi.dll").read_bytes() == RESHADE_DLL

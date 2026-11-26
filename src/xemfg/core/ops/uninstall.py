@@ -20,8 +20,15 @@ def build_uninstall(ctx: Context, game: Game, mark_registry: bool = True) -> Pla
         raise OpError(f"{game.title}: not installed by xemfg (no {STATE_DIR}/state.json)")
     plan = Plan(f"uninstall XeMFG from {game.title}", base=exe_dir)
     dirs = set()
+    from .apply import changed_by_someone_else
+
     for rel, mf in sorted(st.files.items()):
         dest = exe_dir / rel
+        if changed_by_someone_else(dest, mf):
+            plan.warnings.append(f"{rel} changed since xemfg installed it (another mod or a game update?); "
+                                 "left as it is")
+            dirs.update(p for p in dest.parents if exe_dir in p.parents)
+            continue
         if mf.action == "added":
             if dest.exists():
                 plan.delete(dest)
@@ -81,7 +88,14 @@ def _launch_removal(ctx: Context, plan: Plan, game: Game, st: GameState) -> None
     cur = current_launch_text(ctx, game) or ""
     env = {k: None for k in lo.xemfg_added_env(ls.env, ls.original)}
     apply_fn = lo.faugus_apply if ls.target == "faugus" else lo.steam_apply
-    if ls.had_override:
+    from .apply import changed_by_someone_else
+
+    proxy = st.options.get("proxy", "")
+    taken_over = proxy in st.files and changed_by_someone_else(game.exe.parent / proxy, st.files[proxy])
+    if taken_over:
+        plan.notes.append(f"{proxy} now belongs to another mod, which needs its {ls.dll} launch override; "
+                          "leaving it")
+    if ls.had_override or taken_over:
         # the override was there before xemfg: leave it exactly as it is
         plan.notes.append(f"{ls.dll} was already overridden before xemfg; leaving that override")
         new = apply_fn(cur, ls.dll, lo.override_mode(cur, ls.dll), env) if lo.override_mode(cur, ls.dll) \

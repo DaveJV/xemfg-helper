@@ -78,8 +78,11 @@ def check_entry(ctx: Context, e: Entry) -> Health:
     proxy = st.options.get("proxy", "")
     owner = proxy_owner(exe_dir, proxy, osh)
     if owner not in (None, "optiscaler"):
+        from .common import free_proxies
+
+        free = free_proxies(exe_dir, osh, skip=proxy)
         h.add("broken", f"{proxy} now belongs to {KIND_LABELS.get(owner, owner)}",
-              f"remove that mod or reinstall with another --proxy")
+              f"xemfg repair {_q(e)} --proxy {free[0]}" if free else "every proxy name is taken by another mod")
 
     # ini
     ip = exe_dir / "OptiScaler.ini"

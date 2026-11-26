@@ -37,7 +37,10 @@ def compatible_games(ctx: Context, tiers=(Tier.NATIVE_FG,)) -> list[Game]:
 
 def install_batch(ctx: Context, games: list[Game], req: apply.Request, dry_run=False, yes=False,
                   on_progress=None) -> list[Result]:
-    """One confirmation for the whole batch, then per-game results (failures don't stop the rest)."""
+    """One confirmation for the whole batch, then per-game results (failures don't stop the rest).
+
+    A game whose proxy name another mod holds gets the first free name; the plans shown say so."""
+    req = apply.Request(**{**vars(req), "auto_proxy": True})
     preps, results = [], []
     for g in games:
         try:
@@ -54,8 +57,8 @@ def install_batch(ctx: Context, games: list[Game], req: apply.Request, dry_run=F
         if on_progress:
             on_progress(i, len(preps), p.game)
         try:
-            # rebuild against the now-populated cache so every file is hash-compared
-            prep = apply.build(ctx, p.game, apply.Request(**{**vars(req)}))
+            # rebuild against the now-populated cache so every file is hash-compared (same proxy name)
+            prep = apply.build(ctx, p.game, apply.Request(**{**vars(req), "proxy": p.opts.proxy}))
             prep.plan.execute(p.game.exe.parent / ".xemfg" if (p.game.exe.parent / ".xemfg").exists() else None)
             results.append(Result(p.game, True, "installed"))
         except Exception as e:  # keep going
@@ -84,7 +87,8 @@ def rollback(ctx: Context, game: Game, to: str | None = None, dry_run=False, yes
     return Result(game, done, up.message if done else "")
 
 
-def repair(ctx: Context, game: Game, reset_ini=False, clean=False, dry_run=False, yes=False) -> Result:
+def repair(ctx: Context, game: Game, reset_ini=False, clean=False, dry_run=False, yes=False,
+           proxy: str | None = None) -> Result:
     st = ctx.state(game.exe.parent) if game.exe else None
     if st is None:
         raise OpError(f"{game.title}: not installed by xemfg")
@@ -102,6 +106,6 @@ def repair(ctx: Context, game: Game, reset_ini=False, clean=False, dry_run=False
         prep.plan.execute()
         ctx.ui.log("reinstalled")
         return Result(game, True, "clean reinstall")
-    prep = apply.build(ctx, game, apply.Request(mode="repair", reset_ini=reset_ini), dry_run=dry_run)
+    prep = apply.build(ctx, game, apply.Request(mode="repair", reset_ini=reset_ini, proxy=proxy), dry_run=dry_run)
     done = run_plan(ctx, prep.plan, dry_run, yes)
     return Result(game, done or prep.plan.empty, "repaired" if done else ("nothing to repair" if prep.plan.empty else ""))

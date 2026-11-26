@@ -323,7 +323,8 @@ class XemfgApp(App):
         for g in games:
             try:
                 self.ctx.ensure_exe(g)
-                req = apply.Request()
+                # several games: a taken proxy name gets the first free one (the plan says so); one game: asks
+                req = apply.Request(auto_proxy=len(games) > 1 or dry)
                 if len(games) == 1 and not dry:  # one game: choose its FSR4 DLL; several: the newest official
                     from ..core.ops.fsr4swap import pick
 
@@ -339,7 +340,9 @@ class XemfgApp(App):
                         req.fsr4, req.fsr4_explicit = chosen, chosen != "keep"
                 self.install_requests[g.key] = req
                 self.post_log(f"planning {g.title} ...")
-                preps.append(apply.build(self.ctx, g, req, dry_run=dry))
+                prep = apply.build(self.ctx, g, req, dry_run=dry)
+                req.proxy = prep.opts.proxy  # the name chosen now is the one installed after the confirmation
+                preps.append(prep)
             except Exception as e:
                 failed.append(f"{g.title}: {e}")
         text = "\n\n".join(p.plan.render() for p in preps)

@@ -157,9 +157,12 @@ def test_batch_install_all_compatible(env, tmp_path):
     assert sorted(g.title for g in games) == ["Alpha", "Beta", "Delta"]
     res = {r.game.title: r for r in ops.install_batch(ctx, games, apply.Request())}
     assert res["Alpha"].ok and res["Beta"].ok
-    assert not res["Delta"].ok and "ReShade" in res["Delta"].message
+    # ReShade holds dxgi.dll in Delta: a batch takes the first free name, and the plan said so
+    assert res["Delta"].ok and (tmp_path / "D/dxgi.dll").read_bytes() == RESHADE_DLL
+    assert (tmp_path / "D/winmm.dll").exists()
+    assert any("dxgi.dll belongs to ReShade, so OptiScaler goes in as winmm.dll" in x for x in ctx.ui.messages)
     assert ini.Ini(ini.read_text(tmp_path / "B/OptiScaler.ini")).get("FrameGen", "FGInput") == "FSRFG30"
-    assert ctx.ui.confirms == ["Install XeMFG into 2 game(s)?"]
+    assert ctx.ui.confirms == ["Install XeMFG into 3 game(s)?"]
 
 
 def test_update_then_rollback(env, tmp_path):
@@ -224,3 +227,40 @@ def test_hash_mismatch_aborts_and_deletes(env, tmp_path):
         ops.install(ctx, ctx.resolve("Game"), apply.Request(), yes=True)
     assert not (root / "dxgi.dll").exists()
     assert not list(world.paths.cache_dir.rglob("OptiScaler-mfgu.dll"))
+
+
+def test_proxy_taken_asks_for_a_free_name(env, tmp_path):
+    from fakes import ASI_LOADER_DLL, SPECIALK_DLL
+    from xemfg.core.context import ScriptedUI
+
+    world, m, f = env
+    root = world.faugus_game("g", "Game", tmp_path / "G", {**TIER_FILES["native"], "dxgi.dll": RESHADE_DLL,
+                                                          "winmm.dll": ASI_LOADER_DLL})
+    ui = ScriptedUI(picks=[1])  # free names: version.dll, dbghelp.dll, ... -> the second one
+    ctx = make_ctx(world, f, ui=ui)
+    g = ctx.resolve("Game")
+    assert ops.install(ctx, g, apply.Request(), yes=True).ok
+    prompt = next(x for x in ui.messages if x.startswith("pick: dxgi.dll already belongs to ReShade"))
+    assert "winmm.dll (Ultimate ASI Loader)" in prompt and "'version.dll', 'dbghelp.dll'" in prompt
+    assert (root / "dbghelp.dll").exists() and (root / "dxgi.dll").read_bytes() == RESHADE_DLL
+    assert (root / "winmm.dll").read_bytes() == ASI_LOADER_DLL
+    assert "dbghelp=n,b" in world.faugus_entry("g")["launch_arguments"]
+    assert json.loads((root / ".xemfg/state.json").read_text())["options"]["proxy"] == "dbghelp.dll"
+
+    # an explicit --proxy that is taken is refused, with every free name
+    root2 = world.faugus_game("h", "Other", tmp_path / "H", {**TIER_FILES["native"], "dxgi.dll": SPECIALK_DLL})
+    ctx.library(refresh=True)
+    with pytest.raises(ConflictError) as e:
+        apply.build(ctx, ctx.resolve("Other"), apply.Request(proxy="dxgi.dll"))
+    assert "Special K" in str(e.value) and "winmm.dll, version.dll, dbghelp.dll, d3d12.dll" in str(e.value)
+    assert (root2 / "dxgi.dll").read_bytes() == SPECIALK_DLL
+
+
+def test_every_name_taken(env, tmp_path):
+    from xemfg.core.platform import PROXY_NAMES
+
+    world, m, f = env
+    world.faugus_game("g", "Game", tmp_path / "G", {**TIER_FILES["native"], **{n: RESHADE_DLL for n in PROXY_NAMES}})
+    ctx = make_ctx(world, f)
+    with pytest.raises(ConflictError, match="Every name OptiScaler can use is taken"):
+        apply.build(ctx, ctx.resolve("Game"), apply.Request(auto_proxy=True))

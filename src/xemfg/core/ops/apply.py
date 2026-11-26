@@ -16,12 +16,13 @@ from .. import fsr4, fsr4choice
 from ..gpu import PROFILES, Profile
 from ..manifest import FILE_COMPONENTS
 from ..models import Game, Tier
-from ..mods import cyboman_build
+from ..mods import KIND_LABELS, cyboman_build
 from ..plan import Plan, TextChange
 from ..platform import dll_override_name
 from ..registry import Entry
 from ..state import STATE_DIR, GameState, IniState, LaunchState, ManagedFile, now
-from .common import ConflictError, OpError, conflict_message, next_free_proxy, proxy_owner, require_exe
+from .common import (ConflictError, OpError, conflict_message, free_proxies, proxy_owner, require_exe,
+                     taken_proxies)
 
 INI = "OptiScaler.ini"
 
@@ -43,6 +44,7 @@ class Request:
     versions: dict[str, str] | None = None  # component -> version to install (overrides the defaults)
     allow_unverified: bool = False  # a mix upstream does not document, without asking again
     replace_kept: bool = False  # replace a DLL the user put into OptiScaler's FSR4 slot
+    auto_proxy: bool = False  # proxy name taken by another mod: use the first free one instead of asking
 
 
 @dataclass
@@ -188,10 +190,8 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
     unverified = ctx.manifest.unverified(versions)
     osh = ctx.manifest.optiscaler_hashes()
 
-    # ---- proxy conflicts
-    owner = proxy_owner(exe_dir, opts.proxy, osh)
-    if owner not in (None, "optiscaler"):
-        raise ConflictError(conflict_message(opts.proxy, owner, next_free_proxy(exe_dir, osh, skip=opts.proxy)))
+    # ---- proxy conflicts: another mod (ReShade, Special K, an ASI loader ...) may hold the name
+    proxy_note = _choose_proxy(ctx, game, exe_dir, opts, req, state, osh)
     report = ctx.compat(game)
     managed_proxy = state.options.get("proxy") if state else None
     if report.optiscaler_proxy and report.optiscaler_proxy not in (opts.proxy, managed_proxy):
@@ -200,6 +200,8 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
 
     plan = Plan(f"{req.mode} {xset.id} -> {game.title}", base=exe_dir)
     plan.warnings += warnings
+    if proxy_note:
+        plan.warnings.append(proxy_note)
     if unverified:
         plan.warnings.append("UNVERIFIED COMBINATION (upstream does not document it; it may crash): "
                              + "; ".join(unverified))
@@ -332,6 +334,47 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
 
 class _NotCached(Exception):
     pass
+
+
+def _choose_proxy(ctx: Context, game: Game, exe_dir: Path, opts: Options, req: Request,
+                  state: GameState | None, osh: set[str]) -> str | None:
+    """Keep OptiScaler off a name another mod holds. Returns a note for the plan when the name changed.
+
+    A name given with --proxy is never replaced by another; a new install asks which free name to use
+    (or takes the first with auto_proxy), like OptiScaler's own setup script.
+    """
+    owner = proxy_owner(exe_dir, opts.proxy, osh)
+    if owner in (None, "optiscaler"):
+        return None
+    free = free_proxies(exe_dir, osh, skip=opts.proxy)
+    q = _q_game(game)
+    if req.proxy or state is not None or not free:
+        fix = f"xemfg repair {q} --proxy {{name}}" if state is not None else "--proxy {name}"
+        raise ConflictError(conflict_message(opts.proxy, owner, free, fix))
+    label = KIND_LABELS.get(owner, owner)
+    if req.auto_proxy:
+        chosen = free[0]
+    else:
+        taken = ", ".join(taken_proxies(exe_dir, osh))
+        i = ctx.ui.pick(f"{opts.proxy} already belongs to {label} (taken: {taken}). "
+                        "Which name should OptiScaler be loaded under?", free)
+        if i is None:
+            raise ConflictError(conflict_message(opts.proxy, owner, free))
+        chosen = free[i]
+    note = f"{opts.proxy} belongs to {label}, so OptiScaler goes in as {chosen}"
+    opts.proxy = chosen
+    return note
+
+
+def _old_proxy_foreign(state: GameState | None, game: Game) -> bool:
+    """The name OptiScaler used before now holds another mod's DLL, which needs its launch override."""
+    old = state.options.get("proxy") if state else None
+    mf = state.files.get(old) if state and old else None
+    return bool(mf and game.exe and changed_by_someone_else(game.exe.parent / old, mf))
+
+
+def _q_game(game: Game) -> str:
+    return game.appid or game.gameid or f'"{game.title}"'
 
 
 SLOT = {"dx12": UPSCALER_DLL, "vk": "OptiScaler/amd_fidelityfx_upscaler_vk.dll"}
@@ -519,8 +562,18 @@ def _record(prior: ManagedFile | None, action: str, sha: str | None, component: 
     return ManagedFile(action, sha or "", None, original, component)
 
 
+def changed_by_someone_else(dest: Path, mf: ManagedFile) -> bool:
+    """The file is there but is not what xemfg put there (another mod or a game update replaced it)."""
+    cur = sha256_or_none(dest)
+    return cur is not None and bool(mf.sha256) and cur != mf.sha256
+
+
 def _revert_file(plan: Plan, exe_dir: Path, rel: str, mf: ManagedFile) -> None:
     dest = exe_dir / rel
+    if changed_by_someone_else(dest, mf):
+        plan.warnings.append(f"{rel} changed since xemfg installed it (another mod or a game update?); "
+                             "left as it is")
+        return
     if mf.action == "added":
         if dest.exists():
             plan.delete(dest, note="no longer used")
@@ -631,12 +684,12 @@ def _plan_launch(ctx: Context, plan: Plan, game: Game, state, new_state: GameSta
     cur = current or ""
     if target == "faugus":
         new = cur
-        if old.dll and old.dll != dll and not old.had_override:
+        if old.dll and old.dll != dll and not old.had_override and not _old_proxy_foreign(state, game):
             new = lo.faugus_apply(new, old.dll, None)
         new = lo.faugus_apply(new, dll, "n,b", {**env, **remove_env})
     else:
         new = cur
-        if old.dll and old.dll != dll and not old.had_override:
+        if old.dll and old.dll != dll and not old.had_override and not _old_proxy_foreign(state, game):
             new = lo.steam_apply(new, old.dll, None)
         new = lo.steam_apply(new, dll, "n,b", {**env, **remove_env})
     ls.written = new

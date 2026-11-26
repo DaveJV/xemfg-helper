@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from xemfg.core import ini
-from xemfg.core.ops import apply, diagnose, gc, health, install as ops, prune
+from xemfg.core import launchopts as lo
+from xemfg.core.ops import apply, diagnose, gc, health, install as ops, prune, uninstall
 from xemfg.core.ops.adopt import build_adopt
 from xemfg.core.ops.common import OpError
 from xemfg.core.ops.run import run_plan
@@ -242,3 +243,31 @@ def test_adopt_manual_setup(world, tmp_path):
     assert sha((root / "dxgi.dll").read_bytes()) == m.get("t2").optiscaler.sha256
     assert ini.Ini(ini.read_text(root / "OptiScaler.ini")).get("XeFG", "FramerateTargetDMFG") == "169.000000"
     assert (root / "dinput8.dll").read_bytes() == ASI_LOADER_DLL
+
+
+def test_mod_takes_over_proxy_then_move_and_uninstall(installed):
+    """ReShade is installed over xemfg's dxgi.dll later: xemfg must never delete or overwrite it."""
+    world, m, f, ctx, g, root = installed
+    (root / "dxgi.dll").write_bytes(RESHADE_DLL)
+    h = statuses(ctx)["Verify Me"]
+    assert any(x.fix.endswith("--proxy winmm.dll") for x in h.findings if "ReShade" in x.message)
+    r = ops.repair(ctx, g, yes=True, proxy="winmm.dll")
+    assert r.ok and (root / "dxgi.dll").read_bytes() == RESHADE_DLL and (root / "winmm.dll").exists()
+    launch = world.steam_launch_options(g.appid) if g.appid else world.faugus_entry(g.gameid)["launch_arguments"]
+    assert lo.override_mode(launch, "winmm") == "n,b"
+    assert lo.override_mode(launch, "dxgi") == "n,b"  # ReShade still needs it
+    assert statuses(ctx)["Verify Me"].status in ("ok", "outdated")
+    assert uninstall.uninstall(ctx, g, yes=True)
+    assert (root / "dxgi.dll").read_bytes() == RESHADE_DLL and not (root / "winmm.dll").exists()
+
+
+def test_uninstall_leaves_a_taken_over_proxy(installed):
+    world, m, f, ctx, g, root = installed
+    (root / "dxgi.dll").write_bytes(RESHADE_DLL)
+    plan = uninstall.build_uninstall(ctx, g)
+    assert not any(o.dest == root / "dxgi.dll" for o in plan.ops)
+    assert any("dxgi.dll changed since xemfg installed it" in w for w in plan.warnings)
+    run_plan(ctx, plan, yes=True)
+    assert (root / "dxgi.dll").read_bytes() == RESHADE_DLL
+    launch = world.steam_launch_options(g.appid) if g.appid else world.faugus_entry(g.gameid)["launch_arguments"]
+    assert lo.override_mode(launch, "dxgi") == "n,b"

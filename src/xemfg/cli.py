@@ -212,8 +212,18 @@ def _check_fsr4(value):
             fail(str(e))
 
 
+def _check_proxy(name):
+    from .core.platform import PROXY_NAMES
+
+    if name and name.lower() not in PROXY_NAMES:
+        fail(f"--proxy must be one of {', '.join(PROXY_NAMES)}")
+    return name.lower() if name else None
+
+
 def _request(input_, proxy, fsr4, dmfg_target, allow_anticheat, mode="install", replace_kept=False):
     from .core.ops.apply import Request
+
+    proxy = _check_proxy(proxy)
 
     if input_ and input_ not in ("FSRFG", "FSRFG30", "Upscaler"):
         fail("--input must be FSRFG, FSRFG30 or Upscaler")
@@ -228,7 +238,9 @@ def _request(input_, proxy, fsr4, dmfg_target, allow_anticheat, mode="install", 
 def install(game: Optional[str] = typer.Argument(None, help="fuzzy name, Steam appid or path"),
             all_compatible: bool = typer.Option(False, "--all-compatible", help="every Native FG game not installed yet"),
             input_: Optional[str] = typer.Option(None, "--input", help="FSRFG | FSRFG30 | Upscaler (default: from the tier)"),
-            proxy: Optional[str] = typer.Option(None, "--proxy", help="proxy DLL name (default dxgi.dll)"),
+            proxy: Optional[str] = typer.Option(None, "--proxy", help="name OptiScaler is loaded under: dxgi.dll "
+                                                "(default), winmm.dll, version.dll, dbghelp.dll, d3d12.dll, "
+                                                "wininet.dll or winhttp.dll; asks when another mod has it"),
             fsr4: Optional[str] = typer.Option(None, "--fsr4", help=FSR4_HELP),
             replace_kept: bool = typer.Option(False, "--replace-kept",
                                               help="replace an FSR4 DLL you put into OptiScaler's folder yourself"),
@@ -242,6 +254,7 @@ def install(game: Optional[str] = typer.Argument(None, help="fuzzy name, Steam a
 
     ctx = ctx_for(yes)
     req = _request(input_, proxy, fsr4, dmfg_target, allow_anticheat, replace_kept=replace_kept)
+    req.auto_proxy = yes or not sys.stdin.isatty()  # no one to ask: the first free name, shown in the plan
     if all_compatible:
         games = ops.compatible_games(ctx)
         if not games:
@@ -609,6 +622,8 @@ def doctor():
 def repair(game: Optional[str] = typer.Argument(None), all_: bool = typer.Option(False, "--all"),
            reset_ini: bool = typer.Option(False, "--reset-ini", help="back up the ini, start from the paired nightly's"),
            clean: bool = typer.Option(False, "--clean", help="full rollback, then fresh install on the current set"),
+           proxy: Optional[str] = typer.Option(None, "--proxy",
+                                               help="move OptiScaler to this name (when another mod took the old one)"),
            dry_run: bool = typer.Option(False, "--dry-run"), yes: bool = typer.Option(False, "--yes", "-y")):
     """Restore managed files, xemfg's ini keys and launch options to the recorded set."""
     from .core.ops import install as ops
@@ -617,7 +632,7 @@ def repair(game: Optional[str] = typer.Argument(None), all_: bool = typer.Option
     games = installed_games(ctx) if all_ else [pick_installed(ctx, game)]
     for g in games:
         try:
-            r = ops.repair(ctx, g, reset_ini=reset_ini, clean=clean, dry_run=dry_run, yes=yes)
+            r = ops.repair(ctx, g, reset_ini=reset_ini, clean=clean, dry_run=dry_run, yes=yes, proxy=_check_proxy(proxy))
             con.print(f"{g.title}: {r.message or 'not changed'}")
         except OpError as e:
             err.print(f"[red]{g.title}:[/] {e}")
