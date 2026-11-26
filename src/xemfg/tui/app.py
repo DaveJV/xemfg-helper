@@ -119,7 +119,8 @@ class PickScreen(ModalScreen[int | None]):
         self.prompt, self.options = prompt, options
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
+        classes = "fsr4-picker" if self.prompt.startswith("FSR4 DLL for ") else None
+        with Vertical(id="dialog", classes=classes):
             yield Label(self.prompt, id="dialog-title")
             t = DataTable(id="pick", cursor_type="row")
             yield t
@@ -188,6 +189,9 @@ class XemfgApp(App):
     #dialog-body { height: 1fr; border: round $panel; }
     #dialog-buttons { height: auto; align-horizontal: right; }
     #dialog-buttons Button { margin-left: 1; }
+    #dialog.fsr4-picker { height: auto; max-height: 100%; padding: 0 1; }
+    .fsr4-picker #dialog-title { dock: top; }
+    .fsr4-picker #dialog-buttons { dock: bottom; }
     PlanScreen, PickScreen { align: center middle; }
     """
     BINDINGS = [

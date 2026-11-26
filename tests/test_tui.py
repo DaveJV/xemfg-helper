@@ -79,6 +79,56 @@ async def test_tui_library_and_batch_install(world, tmp_path):
         assert GameState.load(tmp_path / "A") is None
 
 
+async def test_fsr4_picker_fits_short_list(world):
+    _, fetcher = setup_sets(world)
+    app = XemfgApp(factory(world, fetcher))
+    async with app.run_test(size=(100, 30)) as pilot:
+        await settle(app, pilot)
+        pick = PickScreen("FSR4 DLL for Alpha (* = default)", ["Official", "Game DLL"])
+        await app.push_screen(pick)
+        await pilot.pause()
+
+        dialog = pick.query_one("#dialog")
+        table = pick.query_one("#pick")
+        buttons = pick.query_one("#dialog-buttons")
+        assert table.max_scroll_y == 0
+        assert table.region.bottom == buttons.region.y
+        assert buttons.region.bottom == dialog.content_region.bottom
+
+
+async def test_fsr4_picker_keeps_cancel_visible_and_scrolls_after_terminal_resize(world):
+    _, fetcher = setup_sets(world)
+    app = XemfgApp(factory(world, fetcher))
+    title = "FSR4 DLL for A Game With a Long Name (* = default)"
+    options = [f"Build {i} | amd_fidelityfx_upscaler_dx12.dll" for i in range(40)]
+    selected = []
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await settle(app, pilot)
+        pick = PickScreen(title, options)
+        await app.push_screen(pick, selected.append)
+        await pilot.resize_terminal(42, 10)
+        await pilot.pause()
+
+        dialog = pick.query_one("#dialog")
+        table = pick.query_one("#pick")
+        cancel = pick.query_one("#cancel")
+        assert pick.region.contains_region(dialog.region)
+        assert dialog.content_region.contains_region(cancel.region)
+        assert table.region.bottom <= cancel.region.y
+        assert table.scrollable_content_region.height > table.header_height
+        assert table.max_scroll_y > 0
+
+        await pilot.press("ctrl+end")
+        assert table.scroll_y > 0
+        await pilot.press("enter")
+        assert selected == [39]
+
+        await app.push_screen(PickScreen(title, options), selected.append)
+        await pilot.click("#cancel")
+        assert selected == [39, None]
+
+
 async def test_tui_banner_shows_new_and_broken(world, tmp_path):
     m, f = setup_sets(world)
     world.faugus_game("a", "Alpha", tmp_path / "A", TIER_FILES["native"])
