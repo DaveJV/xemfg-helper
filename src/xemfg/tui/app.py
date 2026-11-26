@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -144,7 +145,10 @@ class XemfgApp(App):
     .bar Button { margin-right: 1; }
     .bar Input { width: 1fr; min-width: 16; }
     DataTable { height: 1fr; }
+    #notes-box { height: auto; max-height: 6; border-top: solid $primary; padding: 0 1; }
+    #notes-box.hidden { display: none; }
     #log { height: 5; border-top: solid $primary; }
+    #log.empty { display: none; }
     #progress { width: 22; }
     #dialog { width: 90%; height: 85%; border: thick $primary; background: $surface; padding: 1; }
     #dialog-title { text-style: bold; }
@@ -204,15 +208,17 @@ class XemfgApp(App):
                 yield Static("Doctor checks every install; Prune drops entries whose folders are gone "
                              "(re-pointing moved games); GC frees unused cache sets and backups. "
                              "Each shows its changes before doing anything.", id="cleanup-text")
-        yield RichLog(id="log", markup=True, wrap=True)
+        with VerticalScroll(id="notes-box", classes="hidden"):
+            yield Static("", id="notes", markup=False)
+        yield RichLog(id="log", markup=True, wrap=True, classes="empty")
         yield Footer()
 
     def on_mount(self) -> None:
         t = self.query_one("#library-table", DataTable)
-        for c in ("", "game", "source", "tier", "input", "status", "notes"):
+        for c in ("", "game", "source", "tier", "input", "status"):
             t.add_column(c, key=c or "sel")
         it = self.query_one("#installed-table", DataTable)
-        for c in ("game", "health", "set", "fsr4 dll", "proxy", "launcher", "issue"):
+        for c in ("game", "health", "set", "fsr4 dll", "proxy", "launcher"):
             it.add_column(c, key=c)
         self.query_one("#progress", ProgressBar).update(total=1, progress=0)
         self.ctx = self._ctx_factory(TuiUI(self)) if self._ctx_factory else Context.default(TuiUI(self))
@@ -221,10 +227,15 @@ class XemfgApp(App):
 
     # ---------------------------------------------------------------- thread-safe helpers
     def post_log(self, msg: str) -> None:
+        def write():
+            log = self.query_one("#log", RichLog)
+            log.remove_class("empty")  # hidden until the first message: no empty box
+            log.write(msg)
+
         if threading.current_thread() is threading.main_thread():
-            self.query_one("#log", RichLog).write(msg)
+            write()
         else:
-            self.call_from_thread(self.query_one("#log", RichLog).write, msg)
+            self.call_from_thread(write)
 
     def post_progress(self, done: int, total: int) -> None:
         def upd():
@@ -271,9 +282,9 @@ class XemfgApp(App):
                 continue
             sel = "[✓]" if key in self.selected else "[ ]"
             new = " [bold cyan]NEW[/]" if key in getattr(self, "new_keys", set()) else ""
-            notes = "; ".join(r.reasons + r.warnings + r.flags)
             t.add_row(sel, g.title + new, g.source.value, f"[{TIER_COLOR[row.tier]}]{row.tier.label}[/]",
-                      r.fg_input or "", row.status, notes[:90], key=key)
+                      r.fg_input or "", row.status, key=key)
+        self.show_notes()
 
     @on(Input.Changed, "#filter")
     def btn_filter(self) -> None:
@@ -399,10 +410,52 @@ class XemfgApp(App):
         t.clear()
         for key, h in sorted(self.health.items(), key=lambda kv: kv[1].title.lower()):
             e = h.entry
-            issue = next((f.message for f in h.findings if f.level != "info"), "")
             fsr = (h.state.components if h.state else e.components).get("fsr4")
             t.add_row(h.title, f"[{HEALTH_COLOR.get(h.status, 'white')}]{h.status}[/]", e.set,
-                      describe_fsr4(fsr), e.options.get("proxy", ""), e.launch_target or "-", issue[:80], key=key)
+                      describe_fsr4(fsr), e.options.get("proxy", ""), e.launch_target or "-", key=key)
+        self.show_notes()
+
+    # ---------------------------------------------------------------- notes pane
+    def notes_for_cursor(self) -> list[str] | None:
+        """Full notes of the highlighted row in the active tab; None when the tab has no table rows."""
+        tab = self.query_one(TabbedContent).active
+        if tab not in ("library", "installed"):
+            return None
+        t = self.query_one(f"#{tab}-table", DataTable)
+        if t.row_count == 0:
+            return None
+        key = t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+        if tab == "library":
+            row = self.rows.get(key)
+            if row is None:
+                return None
+            r = self.ctx.compat(row.game)
+            return r.reasons + r.warnings + r.flags
+        h = self.health.get(key)
+        if h is None:
+            return None
+        return [f"{f.message} (fix: {f.fix})" if f.fix else f.message for f in h.findings if f.level != "info"]
+
+    def show_notes(self) -> None:
+        box = self.query_one("#notes-box", VerticalScroll)
+        notes = self.notes_for_cursor()
+        if notes is None:
+            box.add_class("hidden")
+            return
+        # a Text renders literally, so brackets in a note are never read as markup
+        empty = "no issues" if self.query_one(TabbedContent).active == "installed" else "no notes"
+        text = Text("\n".join(notes)) if notes else Text(empty, style="dim")
+        self.query_one("#notes", Static).update(text)
+        box.remove_class("hidden")
+        box.scroll_home(animate=False)
+
+    @on(DataTable.RowHighlighted)
+    def on_row_highlighted(self) -> None:
+        self.show_notes()
+
+    @on(TabbedContent.TabActivated)
+    def on_tab_activated(self) -> None:
+        self.show_notes()
 
     def _selected_installed(self) -> Game | None:
         t = self.query_one("#installed-table", DataTable)

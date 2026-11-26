@@ -142,3 +142,41 @@ async def test_selected_row_checkbox_renders(world, tmp_path):
         assert shown(t, "faugus:a") == "[ ]"
         await pilot.click("#select-native")  # full refresh: add_row
         assert shown(t, "faugus:a") == "[✓]"
+
+
+async def test_bottom_pane_shows_highlighted_games_full_notes(world, tmp_path):
+    m, f = setup_sets(world)
+    world.faugus_game("a", "Alpha", tmp_path / "A", TIER_FILES["native"])
+    world.faugus_game("b", "Beta", tmp_path / "B", TIER_FILES["upscaler"])
+    app = XemfgApp(factory(world, f))
+    async with app.run_test(size=(100, 40)) as pilot:
+        await settle(app, pilot)
+        t = app.query_one("#library-table")
+        assert "notes" not in [str(c.label) for c in t.columns.values()]
+        log = app.query_one("#log")
+        assert not log.display  # no messages yet: no empty log box
+
+        def pane():
+            return str(app.query_one("#notes").render())
+
+        # a long note with brackets: shown whole, not cut or parsed as markup
+        beta = app.ctx.compat(app.rows["faugus:b"].game)
+        long = "[x] " + "a very long note that would never fit in a table column " * 3 + "[/] end"
+        beta.flags.append(long)
+        assert app.query_one("#notes-box").display
+        assert "game ships FSR frame generation" in pane()  # Alpha is first and highlighted
+        t.focus()
+        await pilot.press("down")  # the pane follows the cursor
+        await pilot.pause()
+        assert pane().split("\n") == beta.reasons + beta.warnings + beta.flags
+        assert long in pane()
+        await pilot.press("up")
+        await pilot.pause()
+        assert long not in pane()
+
+        app.post_log("hello")
+        await pilot.pause()
+        assert log.display and app.query_one("#notes-box").display  # the log appears under the notes
+        await pilot.click("#--content-tab-updates")
+        await pilot.pause()
+        assert not app.query_one("#notes-box").display  # no table on this tab
