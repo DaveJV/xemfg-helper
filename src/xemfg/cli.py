@@ -548,10 +548,9 @@ def config_show():
 @config_app.command("set")
 @guarded
 def config_set(key: str, value: str):
-    """Set dmfg_target, default_proxy, fsr4, gpu_family or wiki_lookup."""
+    """Set dmfg_target, default_proxy, fsr4 or gpu_family."""
     ctx = ctx_for()
-    allowed = {"dmfg_target": int, "default_proxy": str, "fsr4": str, "gpu_family": str,
-               "wiki_lookup": lambda v: v.lower() in ("1", "true", "yes")}
+    allowed = {"dmfg_target": int, "default_proxy": str, "fsr4": str, "gpu_family": str}
     if key not in allowed:
         fail(f"unknown key {key} (one of {', '.join(allowed)})")
     setattr(ctx.config, key, allowed[key](value))

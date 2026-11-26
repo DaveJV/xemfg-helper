@@ -19,8 +19,6 @@ class Config:
     gpu_family: str = "rx7000"
     # chosen exe per game key when exe detection was a tie
     exe_overrides: dict[str, str] = field(default_factory=dict)
-    # use the OptiScaler wiki compatibility list (network, cached)
-    wiki_lookup: bool = True
 
     @classmethod
     def load(cls, path: Path) -> "Config":
