@@ -1,0 +1,24 @@
+﻿[02:00:46.454] OptiScaler detected at startup; its menu owns the frame-generation controls unless optiScalerUi is "rtxmfg" (without the key, RTXMFG's tab in OptiScaler's menu offers the DLSS presets and DLSS 5 once OptiScaler hands its plugin API, else RTXMFG's menu while one runs; "shared" keeps RTXMFG's menu, "optiscaler" only the tab).
+[02:00:46.454] MFG_PROXY_UI executable links D3D12 or Vulkan creation and no D3D11 creation: no DirectX 11 menu or D3D11 gateway (step=application_api)
+[02:00:46.454] MFG_PROXY_UI armed mainGraphicsImports=0 graphicsProbes=0 nativeTableWrites=0
+[02:00:46.454] OptiScaler plugin host accepted (InitializeASI).
+[02:00:46.454] OptiScaler plugin API accepted (OptiPluginInit).
+[02:00:46.454] OptiScaler plugin API layout: upstream.
+[02:00:46.454] OptiScaler plugin API: XeMFG registered as the FG Nvngx provider (no shim file needed).
+[02:00:46.469] Session diagnostics (beta): every line carries local time; first-chance faults (8 distinct sites written as they happen) and unhandled exceptions are recorded with a stack; minidump X:\Games\FFXVI\RTXMFG-ffxvi-19DE333DBA0D520E.crash.dmp (the first GPU driver fault at first chance: .fault.dmp beside it); "Session end" closes a normal exit. A log that stops without it was ended abruptly (fail-fast, TerminateProcess or Task Manager, a hang, or power loss).
+[02:00:46.469] Session: process 372 started 2026-11-26 02:00:46.370 local (UTC-06:00); log opened 0.1 s later
+[02:00:46.471] System: Windows 11 (10.0.22000.588, 21H1), CPU AMD Ryzen 5 7600X 6-Core Processor with 12 logical processors, RAM 30.9 GB (25.1 GB free), Wine 11.0
+[02:00:46.471] Display adapter: AMD Radeon RX 7600 XT, driver 35.0.99999.9999 dated 11-26-2026 by ?
+[02:00:46.471] Executable: X:\Games\FFXVI\ffxvi.exe, file 1.0.0.0, product "FINAL FANTASY XVI" 1.03
+[02:00:46.471] Backend module: X:\Games\FFXVI\OptiScaler\plugins\MFGUnlocker.asi, file 1.7.2.19, product "MFG Unlocker" 1.7.2
+[02:00:46.471] NGX_RESULT_LITE enabled=1 runtimeCreateLimit=16 providerEntryLimit=16 providerResults=entry-only newHooks=0 DRED=0
+[02:00:46.471] OptiScaler: route=plugin uiOwner=optiscaler version=10.0.0-dev (7f382da9) (20261123_005226) (10.0.0.1) path=X:\Games\FFXVI\dxgi.dll pluginCaller=1 menuTabApi=1
+[02:00:46.632] RTXMFG build=1.7.2 source=v1.5-flipmeter-2026
+[02:00:47.732] XESS {"stage":"host_unlock","applied":["fg_override_clamp","fg_default_ceiling","fg_reported_maximum","fg_live_count_no_reinit","ll_generated_frames_gate"],"generated":5,"model":"ported_mfg_model","route":"host","xell_layout":"ll10","model_source":"control","model_setting":"","model_key":"","model_ini":"X:\\Games\\FFXVI\\OptiScaler.ini"}
+[02:01:09.000] Session end: process exit (ExitProcess, or main returned) after 22.6 s, on thread 376
+[02:01:09.000]   exit stack: #00 MFGUnlocker.asi+0x103F86  #01 MFGUnlocker.asi+0x10205E  #02 MFGUnlocker.asi+0x3DDBC3  #03 ntdll.dll+0xE954  #04 ntdll.dll+0x19B88
+[02:01:09.000]   exit stack: #05 ntdll.dll+0x17AD7  #06 ntdll.dll+0x2905C  #07 kernel32.dll+0x1ABAE  #08 ffxvi.exe+0x1207CAD  #09 ffxvi.exe+0x1207C78
+[02:01:09.000]   exit stack: #10 ffxvi.exe+0xC4D4EC  #11 kernel32.dll+0x11739  #12 ntdll.dll+0x10E2F
+[02:01:09.000]   last state (sampled 0.2 s earlier): route=pending ready=0 routeFailure=1 control=follow 2x gameFG=0 appliedFG=0 restart=0 | setOptions=0 getState=0 ngxCreate=0 fgCreate=0 ngxEvaluate=0 presented=0
+[02:01:09.000]   first-chance faults this session: none
+[02:01:09.000]   repeated hook-state lines suppressed: 19

@@ -60,7 +60,7 @@ class World:
     def add_library(self, path: Path) -> Path:
         (path / "steamapps").mkdir(parents=True, exist_ok=True)
         self.libraries.append(path)
-        self.write_steam()
+        self.write_steam(localconfig=False)
         return path
 
     def steam_game(self, appid: str, name: str, files: dict[str, bytes], exe: str = "Game.exe",
@@ -80,13 +80,15 @@ class World:
         self.write_steam()
         return root
 
-    def write_steam(self):
+    def write_steam(self, localconfig: bool = True):
         folders = {str(i): {"path": str(p), "apps": {}} for i, p in enumerate(self.libraries)}
         (self.steam_root / "steamapps/libraryfolders.vdf").write_text(vdf.dumps({"libraryfolders": folders}))
         cfg = {"InstallConfigStore": {"Software": {"Valve": {"Steam": {
             "CompatToolMapping": {k: {"name": v, "config": "", "priority": "250"} for k, v in self.compat.items()}}}}}}
         (self.steam_root / "config").mkdir(parents=True, exist_ok=True)
         (self.steam_root / "config/config.vdf").write_text(vdf.dumps(cfg))
+        if not localconfig:
+            return
         lc = self.localconfig_path
         lc.parent.mkdir(parents=True, exist_ok=True)
         apps = {a: {"LastPlayed": "1", "LaunchOptions": o} for a, o in self.launch_opts.items()}
