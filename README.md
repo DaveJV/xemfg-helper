@@ -64,7 +64,7 @@ Which GPUs get which:
 Required:
 
 - Python 3.11 or newer
-- Python packages: typer, textual, pefile, rapidfuzz, httpx, tomli-w
+- Python packages: typer, textual, rich, pefile, rapidfuzz, httpx, tomli-w
 - `bsdtar` (libarchive) or 7-Zip, to unpack downloads
 
 Optional:
@@ -76,10 +76,13 @@ Optional:
 ### Arch / CachyOS
 
 ```sh
+sudo pacman -S --needed git base-devel
 git clone https://github.com/DaveJV/xemfg-helper.git
 cd xemfg-helper/packaging/arch
 makepkg -si
 ```
+
+`makepkg -si` installs the Python packages xemfg needs. Run it as your normal user, not root.
 
 ### Debian 12 and 13, Ubuntu 24.04 and newer
 
