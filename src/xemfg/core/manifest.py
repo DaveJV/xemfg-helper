@@ -331,7 +331,11 @@ class Manifest:
         m = cls(d["current"], source=source)
         for k, vs in d.get("components", {}).items():
             for v, spec in vs.items():
-                if k == "cyboman":
+                if k == "fsr4_official":
+                    from .fsr4 import OfficialDll
+
+                    m.components.setdefault(k, {})[v] = OfficialDll.from_dict(spec)
+                elif k == "cyboman":
                     m.components.setdefault(k, {})[v] = CybomanRelease.from_dict(v, spec)
                 elif k in FILE_COMPONENTS:
                     m.components.setdefault(k, {})[v] = FileSpec(key=k, **spec)

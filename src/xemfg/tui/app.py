@@ -16,6 +16,7 @@ from ..core.context import Context
 from ..core.models import Game, Tier
 from ..core.ops import apply
 from ..core.ops.common import OpError
+from ..core.migrate import describe_fsr4
 from ..core.plan import Plan
 
 TIER_COLOR = {Tier.NATIVE_FG: "green", Tier.UPSCALER: "yellow", Tier.DLSSG_ONLY: "magenta",
@@ -187,6 +188,7 @@ class XemfgApp(App):
                     yield Button("Repair", id="repair")
                     yield Button("Diagnose", id="diagnose")
                     yield Button("Status", id="status")
+                    yield Button("FSR4 DLL", id="fsr4-swap")
                     yield Button("Uninstall", id="uninstall", variant="error")
                 yield DataTable(id="installed-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Updates", id="updates"):
@@ -210,7 +212,7 @@ class XemfgApp(App):
         for c in ("", "game", "source", "tier", "input", "status", "notes"):
             t.add_column(c, key=c or "sel")
         it = self.query_one("#installed-table", DataTable)
-        for c in ("game", "health", "set", "proxy", "launcher", "issue"):
+        for c in ("game", "health", "set", "fsr4 dll", "proxy", "launcher", "issue"):
             it.add_column(c, key=c)
         self.query_one("#progress", ProgressBar).update(total=1, progress=0)
         self.ctx = self._ctx_factory(TuiUI(self)) if self._ctx_factory else Context.default(TuiUI(self))
@@ -317,11 +319,27 @@ class XemfgApp(App):
     def prepare_install(self, games: list[Game], dry: bool) -> None:
         """Build plans (downloads and verifies files on the first run), then ask once."""
         preps, failed = [], []
+        self.install_requests = {}
         for g in games:
             try:
                 self.ctx.ensure_exe(g)
+                req = apply.Request()
+                if len(games) == 1 and not dry:  # one game: choose its FSR4 DLL; several: the newest official
+                    from ..core.ops.fsr4swap import pick
+
+                    try:
+                        chosen = pick(self.ctx, g, for_install=True)
+                    except OpError as e:
+                        self.post_log(f"[yellow]{e}[/]")
+                        chosen = ""
+                    if chosen is None:
+                        self.post_log("install cancelled")
+                        return
+                    if chosen:
+                        req.fsr4, req.fsr4_explicit = chosen, chosen != "keep"
+                self.install_requests[g.key] = req
                 self.post_log(f"planning {g.title} ...")
-                preps.append(apply.build(self.ctx, g, apply.Request(), dry_run=dry))
+                preps.append(apply.build(self.ctx, g, req, dry_run=dry))
             except Exception as e:
                 failed.append(f"{g.title}: {e}")
         text = "\n\n".join(p.plan.render() for p in preps)
@@ -348,7 +366,8 @@ class XemfgApp(App):
             self.post_progress(i, n)
             self._set_status(g.key, "installing...")
             try:
-                prep = apply.build(self.ctx, g, apply.Request())
+                req = getattr(self, "install_requests", {}).get(g.key) or apply.Request()
+                prep = apply.build(self.ctx, g, req)
                 prep.plan.execute()
                 self._set_status(g.key, "installed")
                 self.post_log(f"[green]installed[/] {g.title}")
@@ -378,8 +397,9 @@ class XemfgApp(App):
         for key, h in sorted(self.health.items(), key=lambda kv: kv[1].title.lower()):
             e = h.entry
             issue = next((f.message for f in h.findings if f.level != "info"), "")
+            fsr = (h.state.components if h.state else e.components).get("fsr4")
             t.add_row(h.title, f"[{HEALTH_COLOR.get(h.status, 'white')}]{h.status}[/]", e.set,
-                      e.options.get("proxy", ""), e.launch_target or "-", issue[:80], key=key)
+                      describe_fsr4(fsr), e.options.get("proxy", ""), e.launch_target or "-", issue[:80], key=key)
 
     def _selected_installed(self) -> Game | None:
         t = self.query_one("#installed-table", DataTable)
@@ -397,6 +417,26 @@ class XemfgApp(App):
         g = self._selected_installed()
         if g:
             self.plan_then_run(lambda: apply.build(self.ctx, g, apply.Request(mode="repair")).plan, f"Repair {g.title}?")
+
+    @on(Button.Pressed, "#fsr4-swap")
+    def btn_fsr4_swap(self) -> None:
+        g = self._selected_installed()
+        if g:
+            self.fsr4_swap(g)
+
+    @work(thread=True, exclusive=True, group="op")
+    def fsr4_swap(self, g: Game) -> None:
+        """Pick a DLL for the selected game, then show the plan (the slot, ini keys, backups) before swapping."""
+        from ..core.ops.fsr4swap import pick, swap_plan
+
+        try:
+            choice = pick(self.ctx, g)
+        except OpError as e:
+            self.post_log(f"[red]{e}[/]")
+            return
+        if choice is None:
+            return
+        self.plan_then_run(lambda: swap_plan(self.ctx, g, choice), f"FSR4 DLL for {g.title}: {choice}?")
 
     @on(Button.Pressed, "#uninstall")
     def btn_uninstall(self) -> None:

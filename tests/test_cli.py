@@ -6,7 +6,7 @@ from xemfg import cli
 from xemfg.core.context import Context
 
 from fakes import ASI_LOADER_DLL, TIER_FILES
-from fakeset import setup_sets
+from fakeset import default_sysfs, setup_sets
 
 runner = CliRunner()
 
@@ -14,7 +14,7 @@ runner = CliRunner()
 def patch(monkeypatch, world, fetcher):
     def default(ui):
         return Context(world.paths, world.locations(), ui, lambda: fetcher,
-                       steam_running_fn=lambda: False, faugus_running_fn=lambda: False, sysfs=world.sysfs)
+                       steam_running_fn=lambda: False, faugus_running_fn=lambda: False, sysfs=default_sysfs(world))
     monkeypatch.setattr(Context, "default", staticmethod(default))
 
 

@@ -17,7 +17,7 @@ from . import apply
 from .common import OpError
 from .run import run_plan
 
-UPDATABLE = (*FILE_COMPONENTS, "cyboman")
+UPDATABLE = (*FILE_COMPONENTS, "cyboman", "fsr4")  # fsr4: a newer official DLL of the same kind
 PINNABLE = (*FILE_COMPONENTS, "fsr4")
 ALIASES = {"opti": "optiscaler", "optiscaler.dll": "optiscaler", "plugin": "mfgu", "mfg-unlocker": "mfgu",
            "dll": "fsr4"}
@@ -85,13 +85,28 @@ def plan_update(ctx: Context, game: Game, only: list[str] | None = None, to: dic
     newest = ctx.manifest.newest()
     to = dict(to or {})
     for c, v in to.items():
-        if c in UPDATABLE and v not in ctx.manifest.components.get(c, {}):
+        if c in FILE_COMPONENTS + ("cyboman",) and v not in ctx.manifest.components.get(c, {}):
             raise OpError(f"{c} {v} is not in the manifest (known: {', '.join(ctx.manifest.versions(c))}); "
                           "`xemfg manifest add` resolves a release from upstream")
     wanted = only or list(to) or list(UPDATABLE)
     up = UpdatePlan(game, None)
     versions = {}
+    fsr4_choice = None
     for c in wanted:
+        if c == "fsr4":
+            fsr = st.components.get("fsr4", {})
+            target = to.get("fsr4") or _newer_official(ctx, st)
+            if target is None or target == fsr.get("choice"):
+                if c in to or only:
+                    up.skipped.append("fsr4: " + ("no newer official DLL" if fsr.get("kind") == "official"
+                                                  else "not an official DLL; use `xemfg fsr4 set` to change it"))
+                continue
+            if st.pinned("fsr4") and "fsr4" not in to:
+                up.skipped.append(f"fsr4 is pinned at {describe_fsr4(fsr)}")
+                continue
+            fsr4_choice = target
+            up.changes["fsr4"] = (fsr.get("choice") or describe_fsr4(fsr), target)
+            continue
         if c == "cyboman" and not _uses_cyboman(st):
             if only or c in to:
                 up.skipped.append("cyboman: the FSR4 slot does not hold a cyboman DLL")
@@ -104,11 +119,26 @@ def plan_update(ctx: Context, game: Game, only: list[str] | None = None, to: dic
             continue
         versions[c] = target
         up.changes[c] = (cur.get(c, "?"), target)
-    if not versions:
+    if not versions and not fsr4_choice:
         return up
-    req = apply.Request(mode=mode, versions=versions, allow_unverified=allow_unverified)
+    req = apply.Request(mode=mode, versions=versions, allow_unverified=allow_unverified,
+                        fsr4=fsr4_choice, fsr4_explicit=bool(fsr4_choice))
     up.prep = apply.build(ctx, game, req, dry_run=dry_run)
     return up
+
+
+def _newer_official(ctx: Context, st: GameState) -> str | None:
+    """official:<newest> when the slot holds an older official DLL for the same GPU class."""
+    from ..gpu import PROFILES
+
+    fsr = st.components.get("fsr4", {})
+    profile = PROFILES.get(st.options.get("gpu_profile") or "")
+    if fsr.get("kind") != "official" or profile is None:
+        return None
+    best = fsr4_mod.newest_official(profile, manifest=ctx.manifest)
+    if best and fsr4_mod.vtuple(best.version) > fsr4_mod.vtuple(fsr.get("version")):
+        return f"official:{best.version}"
+    return None
 
 
 def _run(ctx: Context, up: UpdatePlan, allow_unverified: bool, dry_run: bool, yes: bool) -> bool:
@@ -140,6 +170,7 @@ def previous_version(st: GameState, component: str, current: str | None) -> str 
 
 
 def previous_combination(ctx: Context, st: GameState, current: dict[str, str]) -> dict[str, str] | None:
+    current = {**current, "fsr4": st.components.get("fsr4", {}).get("choice")}
     for h in reversed(st.history):
         hc = h.get("components")
         if hc:
@@ -150,8 +181,10 @@ def previous_combination(ctx: Context, st: GameState, current: dict[str, str]) -
                 v.pop("cyboman", None)
         else:
             continue
-        cur = {k: current[k] for k in v if k in current}
+        cur = {k: current.get(k) for k in v}
         if v and v != cur:
+            if v.get("fsr4") == current.get("fsr4"):
+                v.pop("fsr4", None)
             return v
     return None
 
@@ -160,6 +193,13 @@ def rollback(ctx: Context, game: Game, component: str | None = None, to: str | N
              allow_unverified=False, dry_run=False, yes=False) -> tuple[bool, UpdatePlan]:
     st = _state(ctx, game)
     cur = current_versions(ctx, st)
+    if component == "fsr4":
+        fsr = st.components.get("fsr4", {})
+        target = to or previous_version(st, "fsr4", fsr.get("choice"))
+        if not target:
+            raise OpError(f"{game.title}: no earlier FSR4 DLL in this game's history")
+        up = plan_update(ctx, game, ["fsr4"], {"fsr4": target}, allow_unverified, dry_run, mode="rollback")
+        return _run(ctx, up, allow_unverified, dry_run, yes), up
     if component:
         target = to or previous_version(st, component, cur.get(component))
         if not target:
@@ -229,13 +269,15 @@ def rows(ctx: Context, st: GameState, newest: dict[str, str] | None = None) -> t
         out.append(Row("cyboman", describe_fsr4(fsr), new, status))
     else:
         sel = ctx.gpu_selection().gpu
-        best = fsr4_mod.newest_official(sel.profile) if sel else None
+        best = fsr4_mod.newest_official(sel.profile, manifest=ctx.manifest) if sel else None
         have = fsr.get("version") if fsr.get("kind") == "official" else None
         if best and have and fsr4_mod.vtuple(have) >= fsr4_mod.vtuple(best.version):
             status = "current"
         elif pinned:
             status = "pinned"
+        elif have:
+            status = "update"
         else:
-            status = "info"
+            status = "info"  # not an official DLL: the newest official one is shown as an alternative
         out.append(Row("fsr4", describe_fsr4(fsr), f"official {best.version}" if best else "-", status))
     return out, ctx.manifest.unverified({k: cur[k] for k in FILE_COMPONENTS if k in cur})

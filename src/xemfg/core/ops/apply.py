@@ -12,6 +12,8 @@ from ..backends.xemfg import UPSCALER_DLL
 from ..context import Context
 from ..fsutil import sha256_file, sha256_or_none
 from ..launchers import faugus_writer, steam_writer
+from .. import fsr4, fsr4choice
+from ..gpu import PROFILES, Profile
 from ..manifest import FILE_COMPONENTS
 from ..models import Game, Tier
 from ..mods import cyboman_build
@@ -40,6 +42,7 @@ class Request:
     fsr4_explicit: bool = False
     versions: dict[str, str] | None = None  # component -> version to install (overrides the defaults)
     allow_unverified: bool = False  # a mix upstream does not document, without asking again
+    replace_kept: bool = False  # replace a DLL the user put into OptiScaler's FSR4 slot
 
 
 @dataclass
@@ -73,13 +76,52 @@ def resolve_options(ctx: Context, game: Game, req: Request, state: GameState | N
         proxy = report.optiscaler_proxy  # reuse the name an existing OptiScaler already has
     else:
         proxy = cfg.default_proxy
+    try:
+        choice = fsr4choice.parse(req.fsr4 or (rec.fsr4 if rec else cfg.fsr4))
+    except fsr4choice.ChoiceError as e:
+        raise OpError(str(e)) from None
+    new_choice = rec is None or bool(req.fsr4_explicit) or req.mode == "install"
+    profile_key = rec.gpu_profile if rec else ""
+    family = rec.gpu_family if rec else cfg.gpu_family
+    if new_choice and choice.kind in ("official", "cyboman"):
+        p = gpu_profile_for(ctx, choice)
+        profile_key, family = p.key, p.cyboman or family
+    elif not profile_key and choice.kind == "official":  # an install from before GPU detection
+        profile_key = gpu_profile_for(ctx, choice).key
     return Options(
-        proxy=proxy, fg_input=fg_input,
-        fsr4=req.fsr4 or (rec.fsr4 if rec else cfg.fsr4),
-        gpu_family=rec.gpu_family if rec else cfg.gpu_family,
+        proxy=proxy, fg_input=fg_input, fsr4=str(choice), gpu_family=family,
         dmfg_target=req.dmfg_target or (rec.dmfg_target if rec else cfg.dmfg_target),
         allow_anticheat=req.allow_anticheat or (rec.allow_anticheat if rec else False),
+        gpu_profile=profile_key,
     )
+
+
+def gpu_profile_for(ctx: Context, choice) -> "Profile":
+    """The GPU class an official or cyboman DLL is chosen for. Several GPUs: ask; unknown GPU: refuse."""
+    from ..gpu import override_warning
+
+    sel = ctx.gpu_selection()
+    if sel.needs_choice:
+        i = ctx.ui.pick("Which GPU do your games run on?", [g.describe() for g in sel.choices])
+        if i is None:
+            raise OpError(f"{sel.reason}. Run `xemfg gpu --pick`, or pass --fsr4 nightly")
+        ctx.config.gpu = sel.choices[i].slot
+        ctx.save_config()
+        sel = ctx.gpu_selection()
+    g = sel.gpu
+    if g is None:
+        raise OpError(f"{sel.reason}; xemfg needs to know the GPU to pick an FSR4 DLL (or pass --fsr4 nightly)")
+    if not g.known and not g.override:
+        raise OpError(f"xemfg does not know this GPU ({g.describe()}) and will not guess which FSR4 DLL fits. "
+                      "Pass --fsr4 nightly to use OptiScaler's own DLL, or `xemfg gpu --override <profile>`")
+    p = g.profile
+    if p.model is None:
+        raise OpError(f"{p.label}: {p.note or 'no FSR4 for this GPU'}. Pass --fsr4 nightly")
+    if choice.kind == "cyboman" and p.cyboman is None:
+        raise OpError(f"cyboman's DLLs are not offered for {p.label}: {p.note}")
+    if (w := override_warning(g)):
+        ctx.ui.warn(w)
+    return p
 
 
 def check_tier(ctx: Context, game: Game, req: Request) -> list[str]:
@@ -134,7 +176,12 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
         if state is None:
             raise OpError(f"{game.title}: not installed by xemfg (no {STATE_DIR}/state.json)")
         warnings = []
+        r = ctx.compat(game)
+        if r.anti_cheat and not (req.allow_anticheat or state.options.get("allow_anticheat")):
+            raise OpError(f"{game.title}: anti-cheat ({', '.join(r.anti_cheat)}) found; xemfg does not replace "
+                          "game files there (--allow-anticheat only for offline single-player)")
     opts = resolve_options(ctx, game, req, state)
+    choice = fsr4choice.parse(opts.fsr4)
     versions = target_versions(ctx, state, req)
     xset = ctx.manifest.compose(versions)
     set_id = xset.id
@@ -161,26 +208,52 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
     ts = _timestamp()
     backup_dir = f"{STATE_DIR}/backups/{ts}"
 
-    # ---- keep an existing cyboman DLL that xemfg does not manage
+    # ---- a DLL the user put into OptiScaler's FSR4 slot stays theirs
     up_path = exe_dir / UPSCALER_DLL
-    up_managed = state and UPSCALER_DLL in state.files and state.files[UPSCALER_DLL].component == "fsr4"
-    keep_fsr4 = False
-    if up_path.is_file() and not up_managed and not req.fsr4_explicit and opts.fsr4 != "none":
+    slot_rec = state.files.get(UPSCALER_DLL) if state else None
+    keep_fsr4 = choice.kind == "keep"
+    if slot_rec is not None and slot_rec.action == "kept" and choice.kind != "keep":
+        if not req.fsr4_explicit:
+            keep_fsr4 = True  # update/repair never replace it
+        elif not req.replace_kept:
+            raise OpError(f"{game.title}: OptiScaler's FSR4 DLL is one you put there yourself; pass "
+                          "--replace-kept to replace it (it is backed up first)")
+        else:
+            plan.warnings.append("REPLACING your own FSR4 DLL (it is backed up first)")
+    if up_path.is_file() and slot_rec is None and not req.fsr4_explicit and choice.kind != "nightly":
         cy = ctx.manifest.cyboman_by_hash().get(sha256_or_none(up_path) or "") or cyboman_build(up_path)
         if cy:
             keep_fsr4 = True
             plan.notes.append(f"keeping the existing cyboman FSR4 DLL ({cy}); pass --fsr4 to replace it")
+    if keep_fsr4 and not up_path.is_file():
+        raise OpError(f"{game.title}: --fsr4 keep, but OptiScaler's FSR4 slot is empty")
 
     # ---- what goes where
     cache = ctx.cache(xset)
+    official = _official_for(ctx, choice, opts) if not keep_fsr4 else None
+    if official:  # record the exact version: repair and update never move it silently
+        choice = fsr4choice.Choice("official", official[0].version)
+        opts.fsr4 = str(choice)
     try:
-        if dry_run and not cache.ready(opts.fsr4, opts.gpu_family):
+        if dry_run and not (cache.ready("none", opts.gpu_family) and _slot_ready(cache, choice, opts, official)):
             raise _NotCached()
-        placements = backend.placements(cache, opts, keep_fsr4)
+        slot = None if keep_fsr4 else _slot(cache, xset, choice, opts, official)
+        placements = backend.placements(cache, opts, keep_fsr4, slot)
         template = backend.ini_template(cache)
     except _NotCached:
         plan.notes.append(f"would download and verify the {set_id} files into {cache.dir}")
-        placements, template = _coarse_placements(xset, opts, keep_fsr4), None
+        placements, template = _coarse_placements(xset, opts, keep_fsr4, choice, official), None
+    if template is not None:
+        why = fsr4choice.template_supports(ini_mod.read_text(template), fsr4choice.ini_keys(
+            choice, PROFILES.get(opts.gpu_profile or "")))
+        if why:
+            raise OpError(f"{game.title}: {why}")
+    if not keep_fsr4:
+        plan.notes.append(f"FSR4 DLL: {_describe_choice(choice, opts, official)}")
+    if choice.kind == "cyboman" and choice.arg and "lossy" in fsr4choice.variant_dir(
+            xset.family(opts.gpu_family), choice.arg):
+        plan.warnings.append(f"cyboman {choice.arg} changes the picture against AMD's: "
+                             + (cyboman_warning(cache, opts.gpu_family, choice.arg) or "read its WARNING.txt"))
 
     new_state = GameState(game_key=game.key, title=game.title, set=set_id, options=opts.to_dict(),
                           backend=backend.name) if state is None else _copy_state(state)
@@ -214,9 +287,16 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
             plan.notes.append(f"would install {pl.rel} ({pl.component})")
 
     # ---- managed files the new set no longer uses
+    coarse = any(pl.src is None and pl.rel.startswith("OptiScaler/ (") for pl in placements)
+    if coarse and state:
+        plan.notes.append("the files inside OptiScaler/ are compared once they are downloaded "
+                          "(a dry run downloads nothing)")
     if state:
         for rel, mf in state.files.items():
             if rel in files or rel == INI:
+                continue
+            if coarse and mf.component in ("nightly", "fsr4-stock") and not (
+                    rel in SLOT.values() or rel == UPSCALER_DLL + ".orig"):
                 continue
             if keep_fsr4 and rel == UPSCALER_DLL:
                 continue
@@ -227,7 +307,7 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
         files[UPSCALER_DLL] = ManagedFile("kept", sha256_or_none(up_path) or "", None, sha256_or_none(up_path), "fsr4")
 
     new_state.files = files
-    _record_components(ctx, new_state, state, versions, opts, xset)
+    _record_components(ctx, new_state, state, versions, opts, xset, choice, official, keep_fsr4)
 
     # ---- OptiScaler.ini
     _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, backup_dir,
@@ -244,6 +324,7 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
     def commit():
         new_state.save(exe_dir)
         _register(ctx, game, new_state)
+        _keep_in_store(ctx, game, exe_dir, new_state)
 
     plan.after.append(commit)
     return Prepared(game, plan, opts, set_id, versions=versions, unverified=unverified)
@@ -253,6 +334,98 @@ class _NotCached(Exception):
     pass
 
 
+SLOT = {"dx12": UPSCALER_DLL, "vk": "OptiScaler/amd_fidelityfx_upscaler_vk.dll"}
+
+
+def _official_for(ctx: Context, choice, opts: Options) -> list:
+    """The official DLL(s) for an `official` choice: dx12, plus vk when that version has one."""
+    if choice.kind != "official":
+        return []
+    profile = PROFILES.get(opts.gpu_profile or "")
+    cat = fsr4.catalog(ctx.manifest)
+    if choice.arg:
+        dx = next((d for d in cat if d.api == "dx12" and d.version == choice.arg), None)
+        if dx is None:
+            known = ", ".join(sorted({d.version for d in cat if d.api == "dx12"}, key=fsr4.vtuple, reverse=True))
+            raise OpError(f"no official FSR4 DLL {choice.arg} (known: {known})")
+    else:
+        dx = fsr4.newest_official(profile, "dx12", ctx.manifest) if profile else None
+        if dx is None:
+            raise OpError("no official FSR4 DLL fits this GPU")
+    if profile is not None and (why := fsr4choice.official_ok(dx, profile)):
+        raise OpError(f"official {dx.version} does not fit {profile.label}: {why}")
+    vk = next((d for d in cat if d.api == "vk" and d.version == dx.version), None)
+    return [dx] + ([vk] if vk else [])
+
+
+def _slot_ready(cache, choice, opts: Options, official) -> bool:
+    if choice.kind == "cyboman":
+        return cache.ready(str(choice), opts.gpu_family)
+    if choice.kind == "official":
+        return all(cache.official_ready(d) for d in official)
+    return True
+
+
+def _slot(cache, xset, choice, opts: Options, official) -> dict | None:
+    """What goes into OptiScaler's FSR4 slot instead of the nightly's own DLLs (None: the nightly's)."""
+    if choice.kind == "nightly":
+        return None
+    if choice.kind == "original":  # whatever was there before xemfg; nothing: OptiScaler runs the game's
+        return {UPSCALER_DLL: None, SLOT["vk"]: None, UPSCALER_DLL + ".orig": None}
+    if choice.kind == "cyboman":
+        fam = xset.family(opts.gpu_family)
+        vdir = fsr4choice.variant_dir(fam, choice.arg)
+        stock = cache.nightly_dir() / UPSCALER_DLL
+        return {UPSCALER_DLL: Placement(cache.cyboman_dll(opts.gpu_family, vdir), UPSCALER_DLL, "fsr4", fam.dlls[vdir]),
+                # AMD's file beside it, as cyboman's README and xemfg-linux.sh do
+                UPSCALER_DLL + ".orig": Placement(stock, UPSCALER_DLL + ".orig", "fsr4-stock")}
+    out = {UPSCALER_DLL + ".orig": None}
+    for d in official:
+        out[SLOT[d.api]] = Placement(cache.official_dll(d), SLOT[d.api], "fsr4", d.sha256)
+    return out
+
+
+def cyboman_warning(cache, family: str, variant: str, lines: int = 4) -> str | None:
+    """The first lines of the WARNING.txt cyboman ships with a lossy build (when the archive is extracted)."""
+    try:
+        vdir = fsr4choice.variant_dir(cache.xset.family(family), variant)
+    except Exception:
+        return None
+    p = cache.cyboman_dir() / family / vdir / "WARNING.txt"
+    if not p.is_file():
+        return None
+    text = [x.strip() for x in p.read_text(errors="replace").splitlines() if x.strip()]
+    return " ".join(text[:lines]) or None
+
+
+def _describe_choice(choice, opts: Options, official) -> str:
+    profile = PROFILES.get(opts.gpu_profile or "")
+    gpu = f" for {profile.label}" if profile else ""
+    if choice.kind == "official":
+        d = official[0]
+        return f"official {d.version} (AMD FSR SDK {d.sdk_tag}){gpu}" + (" + Vulkan" if len(official) > 1 else "")
+    if choice.kind == "cyboman":
+        return f"cyboman {choice.arg} from the {opts.gpu_family} archive{gpu}"
+    if choice.kind == "original":
+        return "what was in OptiScaler's slot before xemfg (nothing: OptiScaler runs the game's own copy)"
+    return "the DLL that comes with the OptiScaler nightly"
+
+
+def _keep_in_store(ctx: Context, game: Game, exe_dir: Path, st: GameState) -> None:
+    """Every FSR4 DLL put into a game is kept in the store, so going back never needs the cache or network."""
+    fsr = st.components.get("fsr4", {})
+    for rel in (UPSCALER_DLL, SLOT["vk"]):
+        mf = st.files.get(rel)
+        if mf is None or mf.component != "fsr4" or not (exe_dir / rel).is_file():
+            continue
+        try:
+            ctx.store.put(exe_dir / rel, {"kind": fsr.get("kind"), "version": fsr.get("version"),
+                                          "variant": fsr.get("variant"), "family": fsr.get("family"),
+                                          "api": "vk" if rel.endswith("_vk.dll") else "dx12", "games": [game.key]})
+        except OSError as e:
+            ctx.ui.warn(f"could not keep a copy of {rel} in the DLL store: {e}")
+
+
 def history_versions(comps: dict) -> dict[str, str]:
     """What a history entry records: each file component's version, the FSR4 slot's kind, and the cyboman
     release when the slot holds one (what rollback and gc read back)."""
@@ -260,6 +433,8 @@ def history_versions(comps: dict) -> dict[str, str]:
     fsr = comps.get("fsr4", {})
     if fsr:
         out["fsr4_kind"] = fsr.get("kind")
+        if fsr.get("choice"):
+            out["fsr4"] = fsr["choice"]
         if fsr.get("kind") == "cyboman":
             out["cyboman"] = fsr.get("version")
             out["cyboman_variant"] = fsr.get("variant")
@@ -267,14 +442,32 @@ def history_versions(comps: dict) -> dict[str, str]:
 
 
 def _record_components(ctx: Context, new_state: GameState, state: GameState | None, versions: dict[str, str],
-                       opts: Options, xset) -> None:
+                       opts: Options, xset, choice=None, official=None, kept: bool = False) -> None:
     """Schema 2: each component's version, what the FSR4 slot holds, and the GPU it was chosen for."""
     from ..migrate import fsr4_component
 
     comps = {k: {"version": versions[k]} for k in FILE_COMPONENTS}
     slot = new_state.files.get(UPSCALER_DLL)
-    comps["fsr4"] = fsr4_component(ctx.manifest, xset.id, opts.to_dict(), slot.action if slot else None,
-                                   slot.sha256 if slot else None, xset=xset, nightly=versions["nightly"])
+    sha = slot.sha256 if slot else None
+    if choice is None:  # adopt: from what is installed
+        comps["fsr4"] = fsr4_component(ctx.manifest, xset.id, opts.to_dict(), slot.action if slot else None, sha,
+                                       xset=xset, nightly=versions["nightly"])
+    elif kept:
+        label = ctx.manifest.cyboman_by_hash().get(sha or "") or "your own DLL"
+        comps["fsr4"] = {"kind": "kept", "version": label, "sha256": sha, "choice": "keep"}
+    elif choice.kind == "official":
+        comps["fsr4"] = {"kind": "official", "version": official[0].version, "sha256": official[0].sha256,
+                         "choice": str(choice)}
+    elif choice.kind == "cyboman":
+        fam = xset.family(opts.gpu_family)
+        comps["fsr4"] = {"kind": "cyboman", "version": xset.cyboman_tag, "variant": fsr4choice.variant_dir(fam, choice.arg),
+                         "family": opts.gpu_family, "sha256": sha, "choice": str(choice)}
+    elif choice.kind == "original":
+        what = "the backed-up original" if slot and slot.action == "replaced" else "none: the game's own copy runs"
+        comps["fsr4"] = {"kind": "original", "version": what, "sha256": sha, "choice": "original"}
+    else:
+        comps["fsr4"] = {**fsr4_component(ctx.manifest, xset.id, {"fsr4": "none"}, None, sha, xset=xset,
+                                          nightly=versions["nightly"]), "choice": "nightly"}
     for k, c in comps.items():  # pins stay
         c["pinned"] = bool(state and state.pinned(k))
     new_state.components = comps
@@ -298,13 +491,18 @@ def _note_fsr4(ctx: Context, game: Game, plan: Plan) -> None:
             plan.notes.append(f"the game ships {d.rel}: {d.label()}; left alone, FSR4 comes from OptiScaler's copy")
 
 
-def _coarse_placements(xset, opts: Options, keep_fsr4: bool) -> list[Placement]:
+def _coarse_placements(xset, opts: Options, keep_fsr4: bool, choice, official) -> list[Placement]:
     out = [Placement(None, opts.proxy, "optiscaler", xset.optiscaler.sha256),
            Placement(None, "OptiScaler/plugins/MFGUnlocker.asi", "plugin", xset.mfgu.inner_sha256.get("MFGUnlocker.dll")),
            Placement(None, "OptiScaler/ (all files from " + xset.nightly.asset + ")", "nightly")]
-    if opts.fsr4 != "none" and not keep_fsr4:
+    if keep_fsr4:
+        return out
+    if choice.kind == "cyboman":
         fam = xset.family(opts.gpu_family)
-        out.append(Placement(None, UPSCALER_DLL, "fsr4", fam.dlls[fam.variant_dir(opts.fsr4)]))
+        out.append(Placement(None, UPSCALER_DLL, "fsr4", fam.dlls[fsr4choice.variant_dir(fam, choice.arg)]))
+    elif choice.kind == "official":
+        for d in official:
+            out.append(Placement(None, SLOT[d.api], "fsr4", d.sha256))
     return out
 
 
@@ -341,10 +539,16 @@ def _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, bac
     exists = path.is_file()
     fresh = state is None
     ist = copy.deepcopy(state.ini) if state else IniState()
-    if req.mode == "repair" and state and state.ini.keys:
+    swap_only = None
+    if req.mode in ("repair", "swap") and state and state.ini.keys:
         owned = copy.deepcopy(state.ini.keys)  # recorded values; other keys are the user's
         if hasattr(backend, "legacy_ini_keys"):
             owned = backend.legacy_ini_keys(owned, opts)
+        if req.mode == "swap":  # a DLL swap changes only the keys that depend on the DLL
+            fsr = {k: v for k, v in backend.owned_ini_keys(opts).get("FSR", {}).items()
+                   if k in ("Fsr4GpuSupport", "Fsr4Model")}
+            owned.setdefault("FSR", {}).update(fsr)
+            swap_only = {"FSR": dict(fsr)}
     else:
         owned = backend.owned_ini_keys(opts)
     ist.keys = owned
@@ -367,7 +571,12 @@ def _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, bac
             ist.backup = bk
 
     before = ini_mod.Ini(base_text)
-    wanted = copy.deepcopy(owned)
+    wanted = copy.deepcopy(swap_only if swap_only is not None else owned)
+    if swap_only is not None:  # the watermark default, once, only over 'auto'
+        wm = backend.fresh_install_ini_defaults(opts).get("FSR", {}).get("Fsr4EnableWatermark")
+        cur = before.get("FSR", "Fsr4EnableWatermark")
+        if wm and wm != "auto" and (cur is None or cur.strip().lower() == "auto"):
+            wanted["FSR"]["Fsr4EnableWatermark"] = wm
     if (fresh and not (exists and existing_setup)) or req.reset_ini:
         # applied once, only over 'auto'/missing values; not owned, so repair never resets them
         for sec, kv in backend.fresh_install_ini_defaults(opts).items():

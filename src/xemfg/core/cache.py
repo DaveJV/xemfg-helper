@@ -73,8 +73,9 @@ class SetCache:
     """The verified files of one combination of component versions (`xset`)."""
 
     def __init__(self, cache_dir: Path, xset: XSet, fetcher: Fetcher,
-                 log: Callable[[str], None] = lambda s: None, progress: Progress | None = None):
+                 log: Callable[[str], None] = lambda s: None, progress: Progress | None = None, store=None):
         self.root = cache_dir
+        self.store = store  # core.store.Store: DLLs used before, tried before downloading
         self.xset = xset
         self.fetcher = fetcher
         self.log = log
@@ -111,6 +112,12 @@ class SetCache:
                 os.link(old, path)
             except OSError:
                 shutil.copy2(old, path)
+            if sha256_or_none(path) == sha256:
+                return path
+            path.unlink(missing_ok=True)
+        kept = self.store.find(sha256) if self.store else None
+        if kept is not None:
+            shutil.copy2(kept, path)
             if sha256_or_none(path) == sha256:
                 return path
             path.unlink(missing_ok=True)
@@ -162,13 +169,21 @@ class SetCache:
     def cyboman_dll(self, family: str, choice: str) -> Path | None:
         if choice == "none":
             return None
+        from .fsr4choice import variant_dir
+
         fam = self.xset.family(family)
-        vdir = fam.variant_dir(choice)
+        vdir = variant_dir(fam, choice)
         want = fam.dlls[vdir]
         dest = self.cyboman_dir() / family
         target = dest / vdir / "amd_fidelityfx_upscaler_dx12.dll"
         if sha256_or_none(target) == want:
             return target
+        kept = self.store.find(want) if self.store else None
+        if kept is not None:  # used before: no need for the archive
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(kept, target)
+            if sha256_or_none(target) == want:
+                return target
         errors = []
         for asset, sha in fam.archives:  # .7z first; the .zip is the fallback, as in the script
             try:
@@ -185,6 +200,19 @@ class SetCache:
             errors.append(f"{asset}: {vdir} DLL missing or wrong hash")
         raise HashMismatch(f"cyboman {family}/{vdir}: " + "; ".join(errors))
 
+    def official_dll(self, d) -> Path:
+        """An official upscaler DLL (fsr4.OfficialDll) from AMD's FidelityFX SDK repo, verified by its SHA-256."""
+        from .fsr4 import UPSCALER
+
+        dest = self.root / "fsr4_official" / f"{d.version}_{d.sha256[:8]}"
+        return self._fetch_verified(d.url, dest, UPSCALER[d.api], d.sha256)
+
+    def official_ready(self, d) -> bool:
+        from .fsr4 import UPSCALER
+
+        p = self.root / "fsr4_official" / f"{d.version}_{d.sha256[:8]}" / UPSCALER[d.api]
+        return sha256_or_none(p) == d.sha256 or (self.store is not None and self.store.find(d.sha256) is not None)
+
     def ready(self, fsr4: str, family: str) -> bool:
         """Everything for this combination is already downloaded, verified and extracted."""
         xs = self.xset
@@ -195,9 +223,11 @@ class SetCache:
 
         ok = extracted(xs.nightly) and extracted(xs.mfgu) and \
             sha256_or_none(component_dir(self.root, xs.optiscaler) / xs.optiscaler.filename) == xs.optiscaler.sha256
-        if ok and fsr4 != "none":
+        if ok and fsr4.startswith("cyboman:"):
+            from .fsr4choice import variant_dir
+
             fam = xs.family(family)
-            vdir = fam.variant_dir(fsr4)
+            vdir = variant_dir(fam, fsr4.split(":", 1)[1])
             ok = sha256_or_none(self.cyboman_dir() / family / vdir / "amd_fidelityfx_upscaler_dx12.dll") == fam.dlls[vdir]
         return ok
 

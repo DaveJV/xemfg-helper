@@ -8,7 +8,7 @@ from xemfg.core.ops.common import ConflictError, OpError
 from xemfg.core.state import GameState
 
 from fakes import ASI_LOADER_DLL, RESHADE_DLL, TIER_FILES
-from fakeset import STOCK_INI, setup_sets, make_ctx, sha
+from fakeset import STOCK_INI, official_bytes, setup_sets, make_ctx, sha
 
 
 @pytest.fixture
@@ -34,15 +34,18 @@ def test_install_faugus_native_fg(env, tmp_path):
     t1 = m.get("t1")
     assert sha((root / "dxgi.dll").read_bytes()) == t1.optiscaler.sha256
     assert (root / "OptiScaler/plugins/MFGUnlocker.asi").read_bytes() == t1.raw["mfgu_dll"]
-    assert (root / "OptiScaler/amd_fidelityfx_upscaler_dx12.dll").read_bytes() == t1.raw["cy"]["4.1.2l-exact"]
-    assert (root / "OptiScaler/amd_fidelityfx_upscaler_dx12.dll.orig").read_bytes() == b"stock fsr t1"
+    # the default FSR4 DLL: the newest official one for the GPU (an RX 7600 here), Vulkan copy included
+    assert (root / "OptiScaler/amd_fidelityfx_upscaler_dx12.dll").read_bytes() == official_bytes("4.1.2.9000", "dx12")
+    assert (root / "OptiScaler/amd_fidelityfx_upscaler_vk.dll").read_bytes() == official_bytes("4.1.2.9000", "vk")
+    assert not (root / "OptiScaler/amd_fidelityfx_upscaler_dx12.dll.orig").exists()
     text = ini.read_text(root / "OptiScaler.ini")
     assert "\r\n" in text and "\n" not in text.replace("\r\n", "")
     i = ini.Ini(text)
     assert i.get("FrameGen", "FGInput") == "FSRFG" and i.get("FrameGen", "FGOutput") == "XeFG"
     assert i.get("XeFG", "FramerateTargetDMFG") == "171" and i.get("DLSSG", "FramerateTargetDMFG") == "auto"
     assert i.get("Plugins", "LoadAsiPlugins") == "true" and i.get("Spoofing", "Dxgi") == "false"
-    assert i.get("FSR", "Fsr4GpuSupport") == "2" and i.get("FSR", "Fsr4Model") == "1"
+    assert i.get("FSR", "Fsr4GpuSupport") == "2" and i.get("FSR", "Fsr4Model") == "1"  # RDNA 3: INT8
+    assert i.get("FSR", "Fsr4EnableWatermark") == "auto"
     assert world.faugus_entry("ff16")["launch_arguments"] == \
         'PROTON_DISABLE_NVAPI=1\nWINEDLLOVERRIDES="dinput8,dxgi=n,b"'
     assert (root / "dinput8.dll").read_bytes() == ASI_LOADER_DLL  # other mod untouched
@@ -164,7 +167,7 @@ def test_update_then_rollback(env, tmp_path):
     root = world.faugus_game("g", "Game", tmp_path / "G", TIER_FILES["native"])
     ctx = make_ctx(world, f)
     g = ctx.resolve("Game")
-    ops.install(ctx, g, apply.Request(), yes=True)
+    ops.install(ctx, g, apply.Request(fsr4="cyboman:exact-l"), yes=True)
     assert (root / "OptiScaler/only_in_t1.dll").exists()
     # user tweak outside xemfg keys survives
     path = root / "OptiScaler.ini"
@@ -201,7 +204,11 @@ def test_keeps_existing_cyboman_unless_told(env, tmp_path):
     g = ctx.resolve("Game")
     ops.install(ctx, g, apply.Request(), yes=True)
     assert (root / "OptiScaler/amd_fidelityfx_upscaler_dx12.dll").read_bytes() == existing
-    ops.install(ctx, g, apply.Request(fsr4="exact", fsr4_explicit=True), yes=True)
+    assert json.loads((root / ".xemfg/state.json").read_text())["components"]["fsr4"]["kind"] == "kept"
+    with pytest.raises(OpError, match="--replace-kept"):  # never replaced without asking for it
+        ops.install(ctx, g, apply.Request(fsr4="exact", fsr4_explicit=True), yes=True)
+    assert (root / "OptiScaler/amd_fidelityfx_upscaler_dx12.dll").read_bytes() == existing
+    ops.install(ctx, g, apply.Request(fsr4="exact", fsr4_explicit=True, replace_kept=True), yes=True)
     assert (root / "OptiScaler/amd_fidelityfx_upscaler_dx12.dll").read_bytes() == m.get("t1").raw["cy"]["exact"]
     uninstall.uninstall(ctx, g, yes=True)
     assert (root / "OptiScaler/amd_fidelityfx_upscaler_dx12.dll").read_bytes() == existing

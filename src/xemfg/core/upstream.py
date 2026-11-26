@@ -208,7 +208,52 @@ class Upstream:
             return self.nightly_spec(tag)
         if kind == "cyboman":
             return self.cyboman_release(tag)
+        if kind == "fsr4":
+            return self.official_dlls(tag, log)
         raise UpstreamError(f"unknown component {kind}")
+
+    def official_dlls(self, tag: str, log=lambda s: None) -> list:
+        """AMD's signed upscaler DLLs of one FSR SDK release (GPUOpen-LibrariesAndSDKs/FidelityFX-SDK).
+
+        The repo has no release assets for them: they are in Kits/FidelityFX/signedbin at the tag. Each file is
+        downloaded at the tag's commit and must match the git blob hash GitHub's API lists for it; then its
+        SHA-256, version and FSR4 models are recorded.
+        """
+        import tempfile as _tf
+
+        from .fsr4 import UPSCALER, OfficialDll, _scan, pe_version
+
+        try:
+            commit = self.f.get_json(f"https://api.github.com/repos/{SDK_REPO}/commits/{tag}")
+            listing = self.f.get_json(f"https://api.github.com/repos/{SDK_REPO}/contents/"
+                                      f"Kits/FidelityFX/signedbin?ref={commit['sha']}")
+        except (FetchError, KeyError, TypeError) as e:
+            raise UpstreamError(f"could not list FSR SDK {tag} (GitHub API): {e}") from None
+        blobs = {e["name"]: e for e in listing if isinstance(e, dict)}
+        out = []
+        for api, name in UPSCALER.items():
+            entry = blobs.get(name)
+            if entry is None:
+                continue
+            url = f"https://raw.githubusercontent.com/{SDK_REPO}/{commit['sha']}/Kits/FidelityFX/signedbin/{name}"
+            with _tf.TemporaryDirectory() as d:
+                path = Path(d) / name
+                self.f.download(url, path)
+                data = path.read_bytes()
+                blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+                if blob != entry.get("sha"):
+                    raise UpstreamError(f"{name} at {tag}: download does not match the git blob GitHub lists")
+                version = pe_version(path)
+                models, _ = _scan(path)
+                if not version or not models:
+                    raise UpstreamError(f"{name} at {tag}: no version resource or no FSR4 model found")
+                log(f"{name}: {version}, models {', '.join(models)}")
+                out.append(OfficialDll(version, api, tag, commit["sha"], hashlib.sha256(data).hexdigest(),
+                                       (commit.get("commit", {}).get("committer", {}).get("date") or "")[:10],
+                                       models))
+        if not out:
+            raise UpstreamError(f"FSR SDK {tag} has no amd_fidelityfx_upscaler DLL in Kits/FidelityFX/signedbin")
+        return out
 
     def newest_nightly(self) -> str:
         """The newest OptiScaler nightly (usually newer than the one MFG Unlocker pairs with)."""
@@ -263,6 +308,14 @@ def merge_into(manifest: Manifest, new: XSet) -> tuple[str, bool]:
 
 def add_component(manifest: Manifest, kind: str, spec) -> tuple[str, bool]:
     """Add one resolved release to the manifest (pairings and `latest` stay). Returns (version, added)."""
+    if kind == "fsr4":  # official DLLs of one SDK release (dx12, and vk when it has one)
+        have = manifest.components.setdefault("fsr4_official", {})
+        added = False
+        for d in spec:
+            if have.get(d.key) != d:
+                have[d.key] = d
+                added = True
+        return spec[0].version, added
     have = manifest.components.setdefault(kind, {})
     v = spec.tag
     if v in have:

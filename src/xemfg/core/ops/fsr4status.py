@@ -67,14 +67,14 @@ def prefix_of(game: Game):
     return fsr4.steam_prefix(game.library, game.appid)
 
 
-def _judge(a_api: str, rt: fsr4.Runtime, g: Gpu | None) -> ApiReport:
+def _judge(a_api: str, rt: fsr4.Runtime, g: Gpu | None, manifest=None) -> ApiReport:
     d = rt.dll
     if d is None:
         return ApiReport(a_api, rt, "none", rt.how)
     if g is None:
         return ApiReport(a_api, rt, "no-gpu", f"{d.label()}; pick a GPU to compare (`xemfg gpu --pick`)")
     p = g.profile
-    newest = fsr4.newest_official(p, a_api)
+    newest = fsr4.newest_official(p, a_api, manifest)
     if p.model is None:
         return ApiReport(a_api, rt, "wrong-gpu", f"{d.label()}; {p.label}: {p.note or 'no FSR4 for this GPU'}")
     if d.cyboman:
@@ -108,7 +108,8 @@ def report(ctx: Context, game: Game) -> Fsr4Report:
     sel = ctx.gpu_selection()
     g = sel.gpu
     note = (g.describe() + f" ({sel.reason})") if g else sel.reason
-    dlls = fsr4.scan_game(exe_dir, game.install_dir, ctx.manifest.cyboman_by_hash())
+    dlls = fsr4.scan_game(exe_dir, game.install_dir, ctx.manifest.cyboman_by_hash(),
+                          official={**fsr4.official_by_sha(ctx.manifest), **fsr4.OFFICIAL_BY_SHA})
     rep = Fsr4Report(game, g, note, dlls)
     if g and (w := override_warning(g)):
         rep.warnings.append(w)
@@ -116,7 +117,7 @@ def report(ctx: Context, game: Game) -> Fsr4Report:
     prefix = prefix_of(game)
     for api in apis_for(ctx, game):
         rt = fsr4.runtime_dll(exe_dir, api, dlls, prefix, optiscaler_installed=installed)
-        rep.apis.append(_judge(api, rt, g))
+        rep.apis.append(_judge(api, rt, g, ctx.manifest))
     running = {a.runtime.dll.path for a in rep.apis if a.runtime.dll}
     rep.unused = [d for d in dlls if d.role == "upscaler" and d.location == "game" and d.path not in running]
     rep.driver = fsr4.driver_fsr(prefix)

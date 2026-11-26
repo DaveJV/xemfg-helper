@@ -76,7 +76,7 @@ def check(ctx: Context, log=lambda s: None) -> CheckResult:
         except Exception as e:
             log(f"could not read the {name.replace('_', ' ')}: {e}")
     if res.newest_sdk:
-        res.sdk_known = any(d.sdk_tag == res.newest_sdk for d in fsr4.OFFICIAL)
+        res.sdk_known = any(d.sdk_tag == res.newest_sdk for d in fsr4.catalog(m))
     for e in ctx.registry.active():
         st = ctx.state(Path(e.exe_dir))
         if st is None or not st.components:

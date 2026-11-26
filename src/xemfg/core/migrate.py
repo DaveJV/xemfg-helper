@@ -9,7 +9,7 @@ the schema 1 file is kept beside it (state.v1.json, registry.v1.json). No game f
 """
 from __future__ import annotations
 
-from .fsr4 import OFFICIAL_BY_SHA
+from .fsr4 import OFFICIAL_BY_SHA, official_by_sha
 from .manifest import FILE_COMPONENTS, Manifest, ManifestError
 from .registry import Entry, Registry
 from .state import GameState
@@ -26,30 +26,38 @@ def file_components(manifest: Manifest, set_id: str) -> dict[str, dict]:
 
 def fsr4_component(manifest: Manifest, set_id: str, options: dict, slot_action: str | None,
                    slot_sha: str | None, xset=None, nightly: str | None = None) -> dict:
-    """What OptiScaler's FSR4 slot holds, from the --fsr4 option and the recorded file.
+    """What OptiScaler's FSR4 slot holds, from the recorded --fsr4 choice and the recorded file.
 
     `xset`/`nightly` describe the files being installed; without them the pairing `set_id` is used.
     """
+    from .fsr4choice import ChoiceError, parse, variant_dir
+
     rec = {"pinned": False, "sha256": slot_sha}
-    choice = options.get("fsr4") or "none"
+    try:
+        choice = parse(options.get("fsr4") or "nightly")
+    except ChoiceError:
+        choice = parse("nightly")
+    rec["choice"] = str(choice)
     family = options.get("gpu_family")
-    if slot_action == "kept":
+    if slot_action == "kept" or choice.kind == "keep":
         label = manifest.cyboman_by_hash().get(slot_sha or "")
-        return {**rec, "kind": "kept", "version": label or "your own DLL"}
-    if choice != "none":
+        return {**rec, "kind": "kept", "version": label or "your own DLL", "choice": "keep"}
+    off = {**official_by_sha(manifest), **OFFICIAL_BY_SHA}.get(slot_sha or "")
+    if choice.kind == "cyboman":
         variant, tag = None, ""
         try:
             xs = xset or manifest.get(set_id)
             tag = xs.cyboman_tag
-            variant = xs.family(family).variant_dir(choice)
+            variant = variant_dir(xs.family(family), choice.arg)
         except ManifestError:
             pass
-        return {**rec, "kind": "cyboman", "version": tag, "variant": variant or choice, "family": family}
-    off = OFFICIAL_BY_SHA.get(slot_sha or "")
+        return {**rec, "kind": "cyboman", "version": tag, "variant": variant or choice.arg, "family": family}
+    if choice.kind == "original":
+        return {**rec, "kind": "original", "version": "what was there before xemfg"}
     if off:
         return {**rec, "kind": "official", "version": off.version}
     p = manifest.pairings.get(set_id)
-    return {**rec, "kind": "nightly", "version": nightly or (p.nightly if p else "")}
+    return {**rec, "kind": "nightly", "version": nightly or (p.nightly if p else ""), "choice": "nightly"}
 
 
 def upgrade_state(st: GameState | None, manifest: Manifest) -> GameState | None:

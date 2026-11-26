@@ -243,7 +243,8 @@ def test_report_installed_game(world, tmp_path, monkeypatch):
     monkeypatch.setitem(fsr4.OFFICIAL_BY_SHA, h, fsr4.OfficialDll("4.1.1.2740", "dx12", "v2.3.0", "c", h, "", ("fp8", "int8")))
     rep = report(ctx, g)
     [a] = rep.apis
-    assert a.verdict == "older" and "4.1.2.4555" in a.message and a.runtime.source == "optiscaler"
+    assert a.verdict == "older" and "newest official for this GPU is 4.1.2.9000" in a.message
+    assert a.runtime.source == "optiscaler"
     assert [d.rel for d in rep.unused] == ["amd_fidelityfx_upscaler_dx12.dll"]
     assert "LogToFile is off" in rep.log_note
 

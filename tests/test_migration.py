@@ -43,7 +43,7 @@ def v1_install(world, tmp_path):
     m, f = setup_sets(world)
     root = world.faugus_game("g", "Game", tmp_path / "G", TIER_FILES["native"])
     ctx = make_ctx(world, f)
-    assert ops.install(ctx, ctx.resolve("Game"), apply.Request(), yes=True).ok
+    assert ops.install(ctx, ctx.resolve("Game"), apply.Request(fsr4="cyboman:exact-l"), yes=True).ok
     old_state, old_reg = to_v1(world, root)
     return world, m, f, root, old_state, old_reg
 
@@ -53,17 +53,17 @@ def test_new_installs_are_schema_2(world, tmp_path):
     world.add_gpu(1, "0000:03:00.0", 0x1002, 0x7480, (11, 0, 2))
     root = world.faugus_game("g", "Game", tmp_path / "G", TIER_FILES["native"])
     ctx = make_ctx(world, f)
-    ops.install(ctx, ctx.resolve("Game"), apply.Request(), yes=True)
+    ops.install(ctx, ctx.resolve("Game"), apply.Request(fsr4="cyboman:exact-l"), yes=True)
     d = json.loads((root / ".xemfg/state.json").read_text())
     assert d["schema"] == 2
     assert {k: v["version"] for k, v in d["components"].items()} == {
         "nightly": "nightly-t1", "optiscaler": "mfgu-t1", "mfgu": "v-t1", "fsr4": "dll-t1"}
     assert d["components"]["fsr4"] | {} == {"kind": "cyboman", "version": "dll-t1", "variant": "4.1.2l-exact",
-                                             "family": "rx7000", "pinned": False,
+                                             "family": "rx7000", "pinned": False, "choice": "cyboman:exact-l",
                                              "sha256": sha(m.get("t1").raw["cy"]["4.1.2l-exact"])}
     assert d["gpu"] == {"profile": "rdna3", "slot": "0000:03:00.0", "chip": "Navi 33", "override": False}
     assert d["history"][-1]["components"] == {"nightly": "nightly-t1", "optiscaler": "mfgu-t1", "mfgu": "v-t1",
-                                              "fsr4_kind": "cyboman", "cyboman": "dll-t1",
+                                              "fsr4_kind": "cyboman", "fsr4": "cyboman:exact-l", "cyboman": "dll-t1",
                                               "cyboman_variant": "4.1.2l-exact"}
     reg = json.loads(world.paths.registry_file.read_text())
     assert reg["schema"] == 2 and reg["installs"]["faugus:g"]["components"]["fsr4"]["variant"] == "4.1.2l-exact"
@@ -114,7 +114,7 @@ def test_v1_none_and_kept_slots(world, tmp_path, monkeypatch):
     to_v1(world, root)
     st = make_ctx(world, f).state(root)
     assert st.components["fsr4"] == {"kind": "nightly", "version": "nightly-t1", "pinned": False,
-                                     "sha256": sha(b"stock fsr t1")}
+                                     "sha256": sha(b"stock fsr t1"), "choice": "nightly"}
     h = sha(b"stock fsr t1")
     monkeypatch.setitem(fsr4.OFFICIAL_BY_SHA, h, fsr4.OfficialDll("4.1.2.4555", "dx12", "v2.4.0", "c", h, "", ()))
     assert make_ctx(world, f).state(root).components["fsr4"]["kind"] == "official"

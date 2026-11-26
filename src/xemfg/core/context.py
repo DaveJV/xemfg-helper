@@ -155,7 +155,13 @@ class Context:
         def prog(done, total):
             self.ui.progress("download", done, total)
 
-        return SetCache(self.paths.cache_dir, xs, self.fetcher, self.ui.log, prog)
+        return SetCache(self.paths.cache_dir, xs, self.fetcher, self.ui.log, prog, store=self.store)
+
+    @property
+    def store(self):
+        from .store import Store
+
+        return Store(self.paths.data_dir / "fsr4")
 
     def steam_running(self) -> bool:
         if self.steam_running_fn:

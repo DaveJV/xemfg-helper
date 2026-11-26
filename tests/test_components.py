@@ -25,7 +25,7 @@ def on_t1(world, tmp_path):
     root = world.faugus_game("g", "Game", tmp_path / "G", TIER_FILES["native"])
     ctx = make_ctx(world, f)
     g = ctx.resolve("Game")
-    assert ops.install(ctx, g, apply.Request(), yes=True).ok
+    assert ops.install(ctx, g, apply.Request(fsr4="cyboman:exact-l"), yes=True).ok
     m.current = "t2"
     m.set_latest_from("t2")
     m.save(world.paths.manifest_file)
@@ -129,7 +129,7 @@ def test_reuses_files_from_old_per_set_folders(world, tmp_path):
     (old / "cyboman.zip").write_bytes(f.routes[t1.cyboman_url("cy-rx7000-t1.zip")])
     world.faugus_game("g", "Game", tmp_path / "G", TIER_FILES["native"])
     ctx = make_ctx(world, FakeFetcher({}))  # no network at all
-    assert ops.install(ctx, ctx.resolve("Game"), apply.Request(), yes=True).ok
+    assert ops.install(ctx, ctx.resolve("Game"), apply.Request(fsr4="cyboman:exact-l"), yes=True).ok
     assert (world.paths.cache_dir / "optiscaler").is_dir()
     # gc keeps the old folder while an install's history names it, and drops it otherwise
     assert "v1.7.2" not in gc.versions_in_use(ctx)[1]

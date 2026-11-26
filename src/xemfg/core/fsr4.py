@@ -48,6 +48,19 @@ class OfficialDll:
     models: tuple[str, ...]
 
     @property
+    def key(self) -> str:
+        return f"{self.version}-{self.api}"
+
+    def to_dict(self) -> dict:
+        return {"version": self.version, "api": self.api, "sdk_tag": self.sdk_tag, "commit": self.commit,
+                "sha256": self.sha256, "released": self.released, "models": list(self.models)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "OfficialDll":
+        return cls(d["version"], d["api"], d["sdk_tag"], d["commit"], d["sha256"], d.get("released", ""),
+                   tuple(d.get("models", ())))
+
+    @property
     def repo_path(self) -> str:
         return f"Kits/FidelityFX/signedbin/{UPSCALER[self.api]}"
 
@@ -75,6 +88,18 @@ OFFICIAL: tuple[OfficialDll, ...] = (
                 "241e6e5e4d848424eb8ec9a6b22c43fe34cf0cf52d30002ca435ba42e53a9ca0", "2025-08-20", (FP8,)),
 )
 OFFICIAL_BY_SHA = {d.sha256: d for d in OFFICIAL}
+
+
+def catalog(manifest=None) -> tuple[OfficialDll, ...]:
+    """Every official DLL xemfg knows: the verified list above, plus SDK releases added to the manifest
+    (`xemfg manifest add fsr4 <sdk-tag>`). A manifest entry wins over a built-in one for the same version."""
+    extra = list((manifest.components.get("fsr4_official", {}) if manifest is not None else {}).values())
+    have = {d.key for d in extra}
+    return tuple(extra + [d for d in OFFICIAL if d.key not in have])
+
+
+def official_by_sha(manifest=None) -> dict[str, OfficialDll]:
+    return {d.sha256: d for d in catalog(manifest)}
 
 # Proton's driver-side FSR (amdxcffx64.dll) carries the FSR SDK version. Proton-CachyOS 11.0-20260702 calls
 # its 2.3.0.2913 copy "AMD's FSR 4.1.1"; the SDK's own notes pair SDK 2.3.0 with FSR 4.1.1.
@@ -159,19 +184,20 @@ class DllInfo:
 
 
 def inspect_file(path: Path, rel: str, role: str, api: str, location: str,
-                 cyboman_hashes: dict[str, str] | None = None) -> DllInfo:
+                 cyboman_hashes: dict[str, str] | None = None,
+                 official: dict[str, OfficialDll] | None = None) -> DllInfo:
     sha = sha256_or_none(path)
     info = DllInfo(path, rel, role, api, location, sha, pe_version(path))
     if role == "upscaler":
         info.models, info.cyboman = _scan(path)
-        info.official = OFFICIAL_BY_SHA.get(sha or "")
+        info.official = (official or OFFICIAL_BY_SHA).get(sha or "")
         if cyboman_hashes and sha in cyboman_hashes:
             info.cyboman = info.cyboman or cyboman_hashes[sha]
     return info
 
 
 def scan_game(exe_dir: Path, install_dir: Path | None = None, cyboman_hashes: dict[str, str] | None = None,
-              max_depth: int = 6) -> list[DllInfo]:
+              max_depth: int = 6, official: dict[str, OfficialDll] | None = None) -> list[DllInfo]:
     """Every FidelityFX upscaler, combined and loader DLL in the game folder, OptiScaler's included."""
     roots = [exe_dir] + ([install_dir] if install_dir and install_dir != exe_dir and install_dir in exe_dir.parents
                          else [])
@@ -193,7 +219,7 @@ def scan_game(exe_dir: Path, install_dir: Path | None = None, cyboman_hashes: di
                 inside_exe = exe_dir == d or exe_dir in d.parents
                 rel = p.relative_to(exe_dir if inside_exe else root).as_posix()
                 location = "optiscaler" if inside_exe and rel.lower().startswith(OPTI_DIR.lower() + "/") else "game"
-                out[p] = inspect_file(p, rel, hit[0], hit[1], location, cyboman_hashes)
+                out[p] = inspect_file(p, rel, hit[0], hit[1], location, cyboman_hashes, official)
     return sorted(out.values(), key=lambda i: (i.location != "optiscaler", i.rel.lower()))
 
 
@@ -346,8 +372,9 @@ def runs_on(dll: DllInfo | OfficialDll, profile: Profile) -> bool:
     return profile.model in dll.models
 
 
-def newest_official(profile: Profile, api: str = "dx12") -> OfficialDll | None:
-    ok = [d for d in OFFICIAL if d.api == api and profile.model in d.models]
+def newest_official(profile: Profile, api: str = "dx12", manifest=None) -> OfficialDll | None:
+    ok = [d for d in catalog(manifest) if d.api == api and profile.model in d.models
+          and not official_issue(d, profile)]
     return max(ok, key=lambda d: vtuple(d.version)) if ok and profile.model else None
 
 

@@ -13,7 +13,9 @@ from fakes import FakeFetcher
 STOCK_INI = (
     "; OptiScaler.ini\r\n\r\n[FrameGen]\r\nEnabled=auto\r\nFGInput=auto\r\nFGOutput=auto\r\n\r\n"
     "[XeFG]\r\nDynamicMFG=auto\r\nFramerateTargetDMFG=auto\r\n\r\n[DLSSG]\r\nFramerateTargetDMFG=auto\r\n\r\n"
-    "[FSR]\r\nUpscalerIndex=auto\r\nFsr4GpuSupport=auto\r\nFsr4Model=auto\r\nFsr4EnableWatermark=auto\r\n\r\n"
+    "[FSR]\r\nUpscalerIndex=auto\r\n"
+    "; 0 = No override | 1 = FP8 | 2 = INT8 | 3 = INT8-2 | 4 = INT8 Lite\r\nFsr4GpuSupport=auto\r\n"
+    "; 0 = FP8 | 1 = INT8 | 2 = INT8 RDNA2 | 3 = INT8 Lite\r\nFsr4Model=auto\r\nFsr4EnableWatermark=auto\r\n\r\n"
     "[Spoofing]\r\nDxgi=auto\r\n\r\n[Plugins]\r\nLoadAsiPlugins=auto\r\n"
 )
 
@@ -94,13 +96,52 @@ def setup_sets(world, current: str = "t1") -> tuple[Manifest, FakeFetcher]:
         m.add_set(xs)
         m.raws[xs.id] = xs.raw  # type: ignore[attr-defined]
     m.set_latest_from(current)
+    add_officials(m, routes)
     m.save(world.paths.manifest_file)
     return m, FakeFetcher(routes)
+
+
+def default_sysfs(world):
+    """The world's GPUs, or one RX 7600 (RDNA 3) when the test did not add any."""
+    if any((world.sysfs / "class/drm").glob("card[0-9]")):
+        return world.sysfs
+    from fakes import World
+
+    w = World.__new__(World)
+    w.sysfs = world.tmp / "sys-default"
+    if not w.sysfs.exists():
+        (w.sysfs / "class/drm").mkdir(parents=True)
+        World.add_gpu(w, 1, "0000:03:00.0", 0x1002, 0x7480, (11, 0, 2))
+    return w.sysfs
 
 
 def make_ctx(world, fetcher, ui=None, steam_running=False) -> Context:
     flag = {"steam": steam_running}
     ctx = Context(world.paths, world.locations(), ui or ScriptedUI(), lambda: fetcher,
-                  steam_running_fn=lambda: flag["steam"], faugus_running_fn=lambda: False, sysfs=world.sysfs)
+                  steam_running_fn=lambda: flag["steam"], faugus_running_fn=lambda: False, sysfs=default_sysfs(world))
     ctx.steam_flag = flag  # type: ignore[attr-defined]
     return ctx
+
+
+ALL_MODELS = ("fp8", "int8", "int8-rdna2", "int8-lite")
+OFFICIAL_DLLS = {  # fake official DLLs, newer than the real ones xemfg knows, so they are what tests pick
+    ("4.1.2.9000", "dx12"): ALL_MODELS, ("4.1.2.9000", "vk"): ALL_MODELS, ("4.1.1.9000", "dx12"): ("fp8", "int8"),
+    ("4.1.0.9000", "dx12"): ("fp8",),
+}
+
+
+def official_bytes(version, api):
+    import fakepe
+
+    return fakepe.upscaler(version, OFFICIAL_DLLS[(version, api)], None) + api.encode()
+
+
+def add_officials(m, routes):
+    from xemfg.core.fsr4 import OfficialDll
+
+    for (version, api), models in OFFICIAL_DLLS.items():
+        data = official_bytes(version, api)
+        d = OfficialDll(version, api, f"v-sdk-{version}", "c0ffee" + version.replace(".", ""), sha(data),
+                        "2026-11-01", models)
+        m.components.setdefault("fsr4_official", {})[d.key] = d
+        routes[d.url] = data

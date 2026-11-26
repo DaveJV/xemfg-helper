@@ -19,6 +19,8 @@ manifest_app = typer.Typer(help="Manage the set manifest.")
 config_app = typer.Typer(help="xemfg settings.")
 app.add_typer(manifest_app, name="manifest")
 app.add_typer(config_app, name="config")
+fsr4_app = typer.Typer(help="The FSR4 DLL in OptiScaler's folder: list the choices, swap, see the kept copies.")
+app.add_typer(fsr4_app, name="fsr4")
 con = Console(highlight=False)
 err = Console(stderr=True, highlight=False)
 
@@ -196,16 +198,29 @@ def _print_fsr4(ctx: Context, g: Game) -> None:
 
 
 # ---------------------------------------------------------------------------------------- install
-def _request(input_, proxy, fsr4, dmfg_target, allow_anticheat, mode="install"):
+FSR4_HELP = ("official (newest for your GPU, the default) | official:<version> | cyboman:<variant> "
+             "(exact, lossy, 4.1.2l-exact, 4.1.2l-lossy) | original | keep | nightly. `xemfg fsr4 list` shows them")
+
+
+def _check_fsr4(value):
+    from .core.fsr4choice import ChoiceError, parse
+
+    if value:
+        try:
+            parse(value)
+        except ChoiceError as e:
+            fail(str(e))
+
+
+def _request(input_, proxy, fsr4, dmfg_target, allow_anticheat, mode="install", replace_kept=False):
     from .core.ops.apply import Request
 
     if input_ and input_ not in ("FSRFG", "FSRFG30", "Upscaler"):
         fail("--input must be FSRFG, FSRFG30 or Upscaler")
-    if fsr4 and fsr4 not in ("exact-l", "lossy-l", "exact", "lossy", "none"):
-        fail("--fsr4 must be exact-l, lossy-l, exact, lossy or none")
+    _check_fsr4(fsr4)
     return Request(fg_input=input_, proxy=proxy, fsr4=fsr4, dmfg_target=dmfg_target,
                    allow_anticheat=allow_anticheat, force_tier=bool(input_), mode=mode,
-                   fsr4_explicit=bool(fsr4))
+                   fsr4_explicit=bool(fsr4), replace_kept=replace_kept)
 
 
 @app.command()
@@ -214,7 +229,9 @@ def install(game: Optional[str] = typer.Argument(None, help="fuzzy name, Steam a
             all_compatible: bool = typer.Option(False, "--all-compatible", help="every Native FG game not installed yet"),
             input_: Optional[str] = typer.Option(None, "--input", help="FSRFG | FSRFG30 | Upscaler (default: from the tier)"),
             proxy: Optional[str] = typer.Option(None, "--proxy", help="proxy DLL name (default dxgi.dll)"),
-            fsr4: Optional[str] = typer.Option(None, "--fsr4", help="exact-l | lossy-l | exact | lossy | none"),
+            fsr4: Optional[str] = typer.Option(None, "--fsr4", help=FSR4_HELP),
+            replace_kept: bool = typer.Option(False, "--replace-kept",
+                                              help="replace an FSR4 DLL you put into OptiScaler's folder yourself"),
             dmfg_target: Optional[int] = typer.Option(None, "--dmfg-target", help="Dynamic MFG target FPS (default 171)"),
             allow_anticheat: bool = typer.Option(False, "--allow-anticheat",
                                                  help="DANGER: install despite anti-cheat (offline play only)"),
@@ -224,7 +241,7 @@ def install(game: Optional[str] = typer.Argument(None, help="fuzzy name, Steam a
     from .core.ops import install as ops
 
     ctx = ctx_for(yes)
-    req = _request(input_, proxy, fsr4, dmfg_target, allow_anticheat)
+    req = _request(input_, proxy, fsr4, dmfg_target, allow_anticheat, replace_kept=replace_kept)
     if all_compatible:
         games = ops.compatible_games(ctx)
         if not games:
@@ -237,6 +254,19 @@ def install(game: Optional[str] = typer.Argument(None, help="fuzzy name, Steam a
             con.print(f"  {'[green]ok[/]' if r.ok else '[red]failed[/]'} {r.game.title}: {r.message}")
         return
     g = ctx.resolve(game)
+    if not fsr4 and not yes and sys.stdin.isatty():
+        from .core.ops.fsr4swap import pick
+
+        try:
+            chosen = pick(ctx, g, for_install=True)
+        except OpError as e:
+            err.print(f"[yellow]{e}[/]")
+            chosen = None
+        else:
+            if chosen is None:
+                fail("no FSR4 DLL chosen")
+        if chosen:
+            req.fsr4, req.fsr4_explicit = chosen, chosen != "keep"
     ops.install(ctx, g, req, dry_run=dry_run, yes=yes)
 
 
@@ -413,8 +443,9 @@ def manifest_refresh():
 
 @manifest_app.command("add")
 @guarded
-def manifest_add(component: str = typer.Argument(..., help="nightly | optiscaler | mfgu | cyboman"),
-                 tag: str = typer.Argument(..., help="release tag, e.g. nightly-20261126 or dll-2026-11-05")):
+def manifest_add(component: str = typer.Argument(..., help="nightly | optiscaler | mfgu | cyboman | fsr4"),
+                 tag: str = typer.Argument(..., help="release tag, e.g. nightly-20261126, dll-2026-11-05, or an "
+                                                     "AMD FSR SDK tag (v2.5.0) for fsr4")):
     """Resolve one release of one component from upstream (hashes included) so you can switch to it."""
     from .core.ops.components import UPDATABLE, parse_components
     from .core.upstream import Upstream, add_component
@@ -426,8 +457,8 @@ def manifest_add(component: str = typer.Argument(..., help="nightly | optiscaler
     v, added = add_component(m, kind, spec)
     if added:
         m.save(ctx.paths.manifest_file)
-    con.print(f"{kind} {v}: {'added' if added else 'already known'}. "
-              f"Use it with `xemfg update <game> --only {kind} --to {v}`.")
+    how = f"xemfg fsr4 set <game> official:{v}" if kind == "fsr4" else f"xemfg update <game> --only {kind} --to {v}"
+    con.print(f"{kind} {v}: {'added' if added else 'already known'}. Use it with `{how}`.")
 
 
 @manifest_app.command("show")
@@ -724,6 +755,58 @@ def gpu(pick: bool = typer.Option(False, "--pick", help="choose the GPU games ru
                   f"`xemfg gpu --override <profile>` (profiles: {', '.join(k for k in PROFILES if k != 'other')}).")
 
 
+@fsr4_app.command("list")
+@guarded
+def fsr4_list(game: Optional[str] = typer.Argument(None, help="an installed game (default: pick one)")):
+    """The FSR4 DLLs this game can have on this GPU, with what each trades off (* = default)."""
+    from .core.ops.fsr4swap import options_for
+
+    ctx = ctx_for()
+    g = pick_installed(ctx, game)
+    opts = options_for(ctx, g)
+    con.print(f"[bold]{g.title}[/]: {ctx.gpu_selection().gpu.describe()}")
+    for o in opts.options:
+        con.print(f"  {str(o.choice):24} {o.line()}", markup=False)
+    for x in opts.excluded:
+        con.print(f"  not offered: {x}", style="dim")
+    con.print("swap with `xemfg fsr4 set <game> <choice>`; official DLLs come from AMD's FidelityFX SDK "
+              "releases on GitHub, checked against their SHA-256")
+
+
+@fsr4_app.command("set")
+@guarded
+def fsr4_set(args: list[str] = typer.Argument(..., help="game(s), then the choice (see `xemfg fsr4 list`)"),
+             all_: bool = typer.Option(False, "--all", help="every install (then only the choice is given)"),
+             replace_kept: bool = typer.Option(False, "--replace-kept",
+                                               help="replace an FSR4 DLL you put there yourself"),
+             dry_run: bool = typer.Option(False, "--dry-run"), yes: bool = typer.Option(False, "--yes", "-y")):
+    """Swap the FSR4 DLL without reinstalling: xemfg fsr4 set ff16 elden cyboman:exact"""
+    from .core.ops.fsr4swap import swap
+
+    *names, choice = args
+    _check_fsr4(choice)
+    if not names and not all_:
+        fail("name one or more games, or pass --all")
+    ctx = ctx_for(yes)
+    for r in swap(ctx, _games(ctx, names, all_), choice, replace_kept, dry_run, yes):
+        con.print(f"{r.game.title}: {'[green]ok[/]' if r.ok else '[red]not changed[/]'} {r.message}")
+
+
+@fsr4_app.command("store")
+@guarded
+def fsr4_store():
+    """FSR4 DLLs xemfg has put into games, kept for going back (gc never removes them)."""
+    ctx = ctx_for()
+    entries = ctx.store.entries()
+    if not entries:
+        con.print("no DLLs kept yet")
+    for e in entries:
+        m = e.meta
+        what = " ".join(str(x) for x in (m.get("kind"), m.get("variant"), m.get("version"), m.get("family")) if x)
+        con.print(f"  {e.sha256[:12]}  {what}  ({m.get('api', 'dx12')}; used by {', '.join(m.get('games', []))})")
+    con.print(f"in {ctx.store.root}")
+
+
 @config_app.command("add-root")
 @guarded
 def config_add_root(directory: Path):
@@ -749,11 +832,13 @@ def config_show():
 @config_app.command("set")
 @guarded
 def config_set(key: str, value: str):
-    """Set dmfg_target, default_proxy, fsr4 or gpu_family."""
+    """Set dmfg_target, default_proxy or fsr4 (the default FSR4 DLL for new installs)."""
     ctx = ctx_for()
-    allowed = {"dmfg_target": int, "default_proxy": str, "fsr4": str, "gpu_family": str}
+    allowed = {"dmfg_target": int, "default_proxy": str, "fsr4": str}
     if key not in allowed:
-        fail(f"unknown key {key} (one of {', '.join(allowed)})")
+        fail(f"unknown key {key} (one of {', '.join(allowed)}; the GPU is set with `xemfg gpu`)")
+    if key == "fsr4":
+        _check_fsr4(value)
     setattr(ctx.config, key, allowed[key](value))
     ctx.save_config()
     con.print(f"{key} = {getattr(ctx.config, key)!r}")

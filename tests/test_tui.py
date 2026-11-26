@@ -1,14 +1,23 @@
 from xemfg.core.context import Context
 from xemfg.core.state import GameState
-from xemfg.tui.app import PlanScreen, XemfgApp
+from xemfg.tui.app import PickScreen, PlanScreen, XemfgApp
 
 from fakes import TIER_FILES
-from fakeset import setup_sets
+from fakeset import default_sysfs, setup_sets
 
 
 def factory(world, fetcher):
     return lambda ui: Context(world.paths, world.locations(), ui, lambda: fetcher,
-                              steam_running_fn=lambda: False, faugus_running_fn=lambda: False, sysfs=world.sysfs)
+                              steam_running_fn=lambda: False, faugus_running_fn=lambda: False, sysfs=default_sysfs(world))
+
+
+async def wait_for_screen(app, pilot, kind, tries=200):
+    """Wait until a modal is shown (a worker may be blocked waiting for it, so do not wait for workers)."""
+    for _ in range(tries):
+        await pilot.pause(0.02)
+        if isinstance(app.screen, kind):
+            return app.screen
+    raise AssertionError(f"no {kind.__name__}; log: " + " || ".join(l.text for l in app.query_one("#log").lines[-5:]))
 
 
 async def settle(app, pilot):
@@ -34,14 +43,31 @@ async def test_tui_library_and_batch_install(world, tmp_path):
         await pilot.click("#select-native")
         assert app.selected == {"faugus:a"}
         await pilot.click("#install-selected")
-        await settle(app, pilot)
-        assert isinstance(app.screen, PlanScreen)
+        pick = await wait_for_screen(app, pilot, PickScreen)  # one game: which FSR4 DLL
+        assert pick.options[0].startswith("* newest official | 4.1.2.9000")
+        assert any("cyboman 4.1.2l-lossy" in o and "WARNING" in o for o in pick.options)
+        await pilot.press("enter")  # the default
+        await wait_for_screen(app, pilot, PlanScreen)
         await pilot.click("#ok")
         await settle(app, pilot)
         assert GameState.load(tmp_path / "A").set == "t1"
         assert GameState.load(tmp_path / "B") is None
         it = app.query_one("#installed-table")
         assert it.row_count == 1
+        assert GameState.load(tmp_path / "A").components["fsr4"]["version"] == "4.1.2.9000"
+        # swap the FSR4 DLL from the Installed tab
+        await pilot.click("#--content-tab-installed")
+        await settle(app, pilot)
+        await pilot.click("#fsr4-swap")
+        pick = await wait_for_screen(app, pilot, PickScreen)
+        row = next(i for i, o in enumerate(pick.options) if "cyboman exact |" in o)
+        for _ in range(row):
+            await pilot.press("down")
+        await pilot.press("enter")
+        await wait_for_screen(app, pilot, PlanScreen)
+        await pilot.click("#ok")
+        await settle(app, pilot)
+        assert GameState.load(tmp_path / "A").components["fsr4"]["variant"] == "exact"
         # uninstall from the Installed tab
         await pilot.click("#--content-tab-installed")
         await settle(app, pilot)
