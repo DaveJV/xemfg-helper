@@ -88,14 +88,14 @@ class PlanScreen(ModalScreen[bool]):
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, title: str, text: str, apply_label: str = "Apply"):
+    def __init__(self, title: str, text: str | Text, apply_label: str = "Apply"):
         super().__init__()
         self.title_text, self.text, self.apply_label = title, text, apply_label
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label(self.title_text, id="dialog-title")
-            with VerticalScroll(id="dialog-body"):
+            with VerticalScroll(id="dialog-body", classes="report-body" if isinstance(self.text, Text) else None):
                 yield Static(self.text, markup=False)
             with Horizontal(id="dialog-buttons"):
                 if self.apply_label:
@@ -187,6 +187,8 @@ class XemfgApp(App):
     #dialog { width: 90%; height: 85%; border: round $primary; background: $surface; padding: 1; }
     #dialog-title { text-style: bold; color: $primary; }
     #dialog-body { height: 1fr; border: round $panel; }
+    #dialog-body.report-body { scrollbar-gutter: stable; }
+    .report-body > Static { width: 100%; height: auto; padding: 0 1; }
     #dialog-buttons { height: auto; align-horizontal: right; }
     #dialog-buttons Button { margin-left: 1; }
     #dialog.fsr4-picker { height: auto; max-height: 100%; padding: 0 1; }
@@ -687,12 +689,31 @@ class XemfgApp(App):
         g = self._selected_installed()
         if g:
             h = self.health.get(g.key)
-            lines = [f"{f.level}: {f.message}" + (f"\n   fix: {f.fix}" if f.fix else "") for f in h.findings] if h else []
-            st = h.state if h else None
-            head = [f"set {h.entry.set}", "options " + ", ".join(f"{k}={v}" for k, v in h.entry.options.items())] if h else []
-            if st:
-                head.append(f"{len(st.files)} managed files")
-            self.push_screen(PlanScreen(f"{g.title}: {h.status if h else '?'}", "\n".join(head + [""] + (lines or ["no findings"])), ""))
+            report = Text(overflow="fold")
+            if h:
+                report.append("Installation\n", "bold")
+                report.append(f"Set {h.entry.set}")
+                if h.state:
+                    report.append(f" · {len(h.state.files)} managed files")
+                if h.entry.options:
+                    report.append("\n\nOptions\n", "bold")
+                    for key, value in h.entry.options.items():
+                        report.append(f"{key}  ", "bold")
+                        report.append(f"{value}\n")
+                else:
+                    report.append("\n")
+                report.append("\nFindings\n", "bold")
+                for finding in h.findings:
+                    report.append(self.styled(f"{finding.level.upper()}  ",
+                                              LEVEL_COLOR.get(finding.level, "foreground-muted"), "bold"))
+                    report.append(f"{finding.message}\n")
+                    if finding.fix:
+                        report.append(f"Fix  {finding.fix}\n", "dim")
+                if not h.findings:
+                    report.append("No findings")
+            else:
+                report.append("Status unavailable")
+            self.push_screen(PlanScreen(f"{g.title}: {h.status if h else '?'}", report, ""))
 
     @work(thread=True, group="op")
     def show_diagnosis(self, g: Game) -> None:
@@ -714,15 +735,36 @@ class XemfgApp(App):
         except (OpError, Exception) as e:
             self.post_log(f"[$error]{e}[/]")
             return
+        report = self.plan_report(plan)
         if plan.empty:
-            self.call_from_thread(self.push_screen, PlanScreen(title, plan.render(), ""))
+            self.call_from_thread(self.push_screen, PlanScreen(title, report, ""))
             return
 
         def after(ok):
             if ok:
                 self.execute_plan(plan)
 
-        self.call_from_thread(self.push_screen, PlanScreen(title, plan.render()), after)
+        self.call_from_thread(self.push_screen, PlanScreen(title, report), after)
+
+    def plan_report(self, plan: Plan) -> Text:
+        report = Text(overflow="fold")
+        for i, line in enumerate(plan.render().splitlines()):
+            if i == 0:
+                report.append(line + "\n", "bold")
+            elif line.startswith("  in "):
+                report.append(line.strip() + "\n\n", "dim")
+            elif line.startswith("  ~ ") and line.endswith(":"):
+                report.append("\n" + line[4:] + "\n", "bold")
+            elif line.startswith(("    +++ ", "    --- ", "    @@")):
+                report.append(line[4:] + "\n", "dim")
+            elif line.startswith(("    +", "    -", "  + ", "  - ", "  ! ")):
+                marker = line.lstrip()[0]
+                color = {"+": "success", "-": "error", "!": "warning"}[marker]
+                report.append(self.styled(line.removeprefix("    ") + "\n", color))
+            else:
+                report.append(line.removeprefix("    ") + "\n")
+        report.rstrip()
+        return report
 
     @work(thread=True, group="op")
     def execute_plan(self, plan: Plan) -> None:

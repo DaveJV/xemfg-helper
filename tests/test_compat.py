@@ -46,6 +46,17 @@ def test_unity_flag_and_api_from_player(world):
     assert r.tier == Tier.UPSCALER
 
 
+def test_xray_renderer_explains_incompatibility_before_battleye(world):
+    world.steam_game("1", "Clear Sky", {
+        "bin/xrRender_R4.dll": make_pe(strings=(b"d3d11.dll",)),
+        "bin/BattlEye/BEClient.dll": b"legacy multiplayer client",
+    }, exe="bin/xrEngine.exe", exe_bytes=make_pe(strings=()))
+    r = analyze(world, "Clear Sky")
+    assert r.tier == Tier.INCOMPATIBLE
+    assert r.reasons == ["D3D11 only (no D3D12 or Vulkan)"]
+    assert r.anti_cheat == ["BattlEye"]
+
+
 def test_foreign_proxies_and_existing_optiscaler(world):
     world.steam_game("1", "Modded", {**TIER_FILES["native"], "dxgi.dll": OPTI_DLL, "dinput8.dll": ASI_LOADER_DLL,
                                     "winmm.dll": RESHADE_DLL, "dbghelp.dll": MS_DLL,

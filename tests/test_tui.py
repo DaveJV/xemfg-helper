@@ -1,4 +1,5 @@
 from xemfg.core.context import Context
+from xemfg.core.plan import Plan, TextChange
 from xemfg.core.state import GameState
 from xemfg.tui.app import PickScreen, PlanScreen, XemfgApp
 
@@ -94,6 +95,24 @@ async def test_fsr4_picker_fits_short_list(world):
         assert table.max_scroll_y == 0
         assert table.region.bottom == buttons.region.y
         assert buttons.region.bottom == dialog.content_region.bottom
+
+
+async def test_repair_preview_wraps_long_diff_lines(world):
+    _, fetcher = setup_sets(world)
+    app = XemfgApp(factory(world, fetcher))
+    plan = Plan("Repair", texts=[TextChange("OptiScaler.ini", "-old\n+Setting=" + "x" * 150)])
+    async with app.run_test(size=(48, 14)) as pilot:
+        await settle(app, pilot)
+        report = app.plan_report(plan)
+        preview = PlanScreen("Repair?", report)
+        await app.push_screen(preview)
+        await pilot.pause()
+
+        body = preview.query_one("#dialog-body")
+        assert body.max_scroll_x == 0
+        assert body.max_scroll_y > 0
+        assert report.plain.endswith("+Setting=" + "x" * 150)
+        assert preview.query_one("#dialog").content_region.contains_region(preview.query_one("#ok").region)
 
 
 async def test_fsr4_picker_keeps_cancel_visible_and_scrolls_after_terminal_resize(world):

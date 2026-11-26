@@ -6,8 +6,11 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+from rich import box
 from rich.console import Console
+from rich.padding import Padding
 from rich.table import Table
+from rich.text import Text
 
 from .core.context import Context, NoGame
 from .core.models import Game, Tier
@@ -779,13 +782,31 @@ def fsr4_list(game: Optional[str] = typer.Argument(None, help="an installed game
     ctx = ctx_for()
     g = pick_installed(ctx, game)
     opts = options_for(ctx, g)
-    con.print(f"[bold]{g.title}[/]: {ctx.gpu_selection().gpu.describe()}")
+    con.print(Text(g.title, style="bold"))
+    con.print(Text(ctx.gpu_selection().gpu.describe(), style="dim"))
+    table = Table(box=box.SIMPLE, show_edge=False, show_lines=True, padding=(0, 1))
+    table.add_column("Choice", style="bold cyan")
+    table.add_column("DLL details", ratio=1)
     for o in opts.options:
-        con.print(f"  {str(o.choice):24} {o.line()}", markup=False)
+        details = Text(o.label, style="bold")
+        if o.default:
+            details.append(" (default)", "green")
+        if o.current:
+            details.append(" (installed)", "cyan")
+        for line in (" · ".join(filter(None, (o.version, o.gpu))), o.tradeoff):
+            if line:
+                details.append(f"\n{line}")
+        if o.warning:
+            details.append("\nWarning: " + o.warning.removeprefix("WARNING: "), "yellow")
+        table.add_row(str(o.choice), details)
+    if opts.options:
+        con.print(table)
+    if opts.excluded:
+        con.print("\n[bold]Unavailable on this GPU[/]")
     for x in opts.excluded:
-        con.print(f"  not offered: {x}", style="dim")
-    con.print("swap with `xemfg fsr4 set <game> <choice>`; official DLLs come from AMD's FidelityFX SDK "
-              "releases on GitHub, checked against their SHA-256")
+        con.print(Padding.indent(Text(x, style="dim"), 2))
+    con.print("\nSwap with [bold]xemfg fsr4 set <game> <choice>[/]")
+    con.print("Official DLLs are verified against AMD's FidelityFX SDK SHA-256 hashes.", style="dim")
 
 
 @fsr4_app.command("set")

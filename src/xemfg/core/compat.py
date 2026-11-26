@@ -159,6 +159,13 @@ def analyze(game: Game, optiscaler_hashes: set[str] | None = None,
     r.graphics_api = graphics_apis(game.exe)
     if r.engine == "Unity" and (exe_dir / "UnityPlayer.dll").is_file():
         r.graphics_api = graphics_apis(exe_dir / "UnityPlayer.dll")
+    elif game.exe.name.lower() == "xrengine.exe":
+        # X-Ray loads its Direct3D renderers from separate modules.
+        for name in sorted(files):
+            if name.startswith("xrrender_") and name.endswith(".dll"):
+                for renderer in files[name]:
+                    if renderer.parent == exe_dir:
+                        r.graphics_api.extend(api for api in graphics_apis(renderer) if api not in r.graphics_api)
 
     # --- proxies already present in the exe folder
     for name in (*PROXY_NAMES, *OTHER_PROXY_NAMES):
@@ -182,10 +189,10 @@ def analyze(game: Game, optiscaler_hashes: set[str] | None = None,
     # --- tier
     if machine == 0x14C:
         r.tier, r.reasons = Tier.INCOMPATIBLE, ["32-bit exe (OptiScaler needs 64-bit)"]
+    elif r.graphics_api and "d3d12" not in r.graphics_api and "vulkan" not in r.graphics_api:
+        r.tier, r.reasons = Tier.INCOMPATIBLE, [f"{'/'.join(r.graphics_api).upper()} only (no D3D12 or Vulkan)"]
     elif r.anti_cheat:
         r.tier, r.reasons = Tier.INCOMPATIBLE, [f"anti-cheat: {', '.join(r.anti_cheat)}"]
-    elif r.graphics_api and "d3d12" not in r.graphics_api and "vulkan" not in r.graphics_api:
-        r.tier, r.reasons = Tier.INCOMPATIBLE, [f"{'/'.join(r.graphics_api).upper()} only (no D3D12)"]
     elif "fsrfg" in r.inputs or "fsr30fg" in r.inputs:
         r.tier = Tier.NATIVE_FG
         r.fg_input = "FSRFG" if "fsrfg" in r.inputs else "FSRFG30"
@@ -217,8 +224,8 @@ def analyze(game: Game, optiscaler_hashes: set[str] | None = None,
         r.flags.append("Unity: may need -force-d3d12 as a game argument")
     elif r.engine:
         r.flags.append(f"engine: {r.engine}")
-    if r.anti_cheat and r.tier != Tier.INCOMPATIBLE:
-        r.warnings.append(f"anti-cheat present: {', '.join(r.anti_cheat)}")
+    if r.anti_cheat and not r.reasons[0].startswith("anti-cheat:"):
+        r.warnings.append(f"anti-cheat files detected: {', '.join(r.anti_cheat)}")
     for fp in r.foreign_proxies:
         from .mods import KIND_LABELS
 

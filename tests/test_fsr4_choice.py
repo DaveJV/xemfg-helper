@@ -306,7 +306,7 @@ def test_cli_fsr4(world, tmp_path, monkeypatch):
     assert r.exit_code == 1 and "unknown FSR4 choice" in r.output
     r = run(cli.app, ["fsr4", "list", "A"])
     assert r.exit_code == 0 and "official:4.1.1.9000" in r.output and "cyboman:4.1.2l-lossy" in r.output
-    assert "(installed)" in r.output and "not offered: official 4.1.0.9000" in r.output
+    assert "(installed)" in r.output and "Unavailable on this GPU" in r.output and "official 4.1.0.9000" in r.output
     r = run(cli.app, ["fsr4", "set", "A", "B", "cyboman:lossy", "--yes"])
     assert "A: ok" in r.output and "B: ok" in r.output, r.output
     r = run(cli.app, ["list"])
