@@ -25,8 +25,11 @@ def file_components(manifest: Manifest, set_id: str) -> dict[str, dict]:
 
 
 def fsr4_component(manifest: Manifest, set_id: str, options: dict, slot_action: str | None,
-                   slot_sha: str | None) -> dict:
-    """What OptiScaler's FSR4 slot holds, from the schema 1 option and the recorded file."""
+                   slot_sha: str | None, xset=None, nightly: str | None = None) -> dict:
+    """What OptiScaler's FSR4 slot holds, from the --fsr4 option and the recorded file.
+
+    `xset`/`nightly` describe the files being installed; without them the pairing `set_id` is used.
+    """
     rec = {"pinned": False, "sha256": slot_sha}
     choice = options.get("fsr4") or "none"
     family = options.get("gpu_family")
@@ -36,7 +39,7 @@ def fsr4_component(manifest: Manifest, set_id: str, options: dict, slot_action: 
     if choice != "none":
         variant, tag = None, ""
         try:
-            xs = manifest.get(set_id)
+            xs = xset or manifest.get(set_id)
             tag = xs.cyboman_tag
             variant = xs.family(family).variant_dir(choice)
         except ManifestError:
@@ -46,7 +49,7 @@ def fsr4_component(manifest: Manifest, set_id: str, options: dict, slot_action: 
     if off:
         return {**rec, "kind": "official", "version": off.version}
     p = manifest.pairings.get(set_id)
-    return {**rec, "kind": "nightly", "version": p.nightly if p else ""}
+    return {**rec, "kind": "nightly", "version": nightly or (p.nightly if p else "")}
 
 
 def upgrade_state(st: GameState | None, manifest: Manifest) -> GameState | None:

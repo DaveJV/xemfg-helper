@@ -70,11 +70,6 @@ class Paths:
     def library_snapshot(self) -> Path:
         return self.cache_dir / "library.json"
 
-    def set_cache(self, set_id: str) -> Path:
-        # Same layout as xemfg-linux.sh (~/.cache/xemfg/v1.7.2), so its downloads are reused
-        # after their SHA-256 checks pass.
-        return self.cache_dir / set_id
-
 
 @dataclass
 class LauncherLocations:

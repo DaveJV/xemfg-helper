@@ -343,25 +343,53 @@ def status(game: Optional[str] = typer.Argument(None)):
 
 
 # ---------------------------------------------------------------------------------------- check / update / rollback
+ROW_STYLE = {"current": "green", "update": "cyan", "pinned": "yellow", "info": "white"}
+
+
+def _games(ctx: Context, games: Optional[list[str]], all_: bool) -> list[Game]:
+    if all_:
+        return installed_games(ctx)
+    if not games:
+        return [pick_installed(ctx, None)]
+    return [pick_installed(ctx, q) for q in games]
+
+
 @app.command()
 @guarded
 def check():
-    """Latest upstream pairing and cyboman vs the local manifest and each install (read-only)."""
+    """Each component of each install: installed vs newest upstream (read-only)."""
     from .core.ops.check import check as do_check
 
     ctx = ctx_for()
     r = do_check(ctx, log=lambda s: con.print(f"  {s}", style="dim"))
     if r.error:
-        fail(f"could not check upstream: {r.error}")
-    if r.up_to_date:
-        con.print(f"[green]up to date[/]: manifest set {r.local_current} is the current upstream pairing")
+        err.print(f"[yellow]could not read upstream ({r.error}); comparing with the local manifest[/]")
+    elif r.up_to_date:
+        con.print(f"[green]manifest up to date[/]: {r.local_current} is the current upstream pairing")
     else:
-        con.print(f"[cyan]update available[/] (local set {r.local_current}):")
+        con.print(f"[cyan]upstream has newer versions[/] (local pairing {r.local_current}):")
         for d in r.differences:
             con.print(f"  {d}")
-        con.print("  run `xemfg update --all` (refreshes the manifest first)")
-    for title, s in r.outdated_installs:
-        con.print(f"  outdated install: {title} on {s}")
+    if r.newest_nightly:
+        paired = r.latest.nightly.tag if r.latest else ctx.manifest.pairings[ctx.manifest.current].nightly
+        if r.newest_nightly != paired:
+            con.print(f"  newest OptiScaler nightly: {r.newest_nightly} (MFG Unlocker pairs with {paired}; "
+                      f"a newer one is an unverified mix: `xemfg manifest add nightly {r.newest_nightly}`)")
+    if r.newest_sdk and not r.sdk_known:
+        con.print(f"  [cyan]AMD released FSR SDK {r.newest_sdk}[/]; xemfg's official DLL list does not have it yet")
+    for gc_ in r.games:
+        con.print(f"[bold]{gc_.title}[/]")
+        t = Table(box=None, pad_edge=False, show_header=False)
+        for _ in range(4):
+            t.add_column(overflow="fold")
+        for row in gc_.rows:
+            t.add_row(f"  {row.component}", row.installed, row.newest,
+                      f"[{ROW_STYLE[row.status]}]{row.status}[/]")
+        con.print(t)
+        for why in gc_.unverified:
+            con.print(f"  [yellow]unverified combination:[/] {why}")
+    if any(row.status == "update" for g in r.games for row in g.rows):
+        con.print("`xemfg update --all` updates everything not pinned; `--only nightly,mfgu` picks components")
     from .core.ops.fsr4status import report
 
     for g in installed_games(ctx):
@@ -383,51 +411,124 @@ def manifest_refresh():
     con.print(f"current set: {sid}" + (" (new)" if changed else " (unchanged)"))
 
 
+@manifest_app.command("add")
+@guarded
+def manifest_add(component: str = typer.Argument(..., help="nightly | optiscaler | mfgu | cyboman"),
+                 tag: str = typer.Argument(..., help="release tag, e.g. nightly-20261126 or dll-2026-11-05")):
+    """Resolve one release of one component from upstream (hashes included) so you can switch to it."""
+    from .core.ops.components import UPDATABLE, parse_components
+    from .core.upstream import Upstream, add_component
+
+    ctx = ctx_for()
+    [kind] = parse_components([component], UPDATABLE)
+    spec = Upstream(ctx.fetcher).component(kind, tag, log=lambda s: con.print(f"  {s}", style="dim"))
+    m = ctx.manifest
+    v, added = add_component(m, kind, spec)
+    if added:
+        m.save(ctx.paths.manifest_file)
+    con.print(f"{kind} {v}: {'added' if added else 'already known'}. "
+              f"Use it with `xemfg update <game> --only {kind} --to {v}`.")
+
+
 @manifest_app.command("show")
 @guarded
 def manifest_show():
-    """Print the sets in the manifest."""
+    """Print the pairings and every known version of each component."""
     ctx = ctx_for()
     m = ctx.manifest
+    con.print("pairings (combinations upstream documents):")
     for sid in m.ordered_ids():
         s = m.sets[sid]
         con.print(f"{'*' if sid == m.current else ' '} {sid:24} {s.notes}")
+    con.print("components:")
+    for kind in ("nightly", "optiscaler", "mfgu", "cyboman"):
+        con.print(f"  {kind:10} {', '.join(m.versions(kind))}")
 
 
 @app.command()
 @guarded
-def update(game: Optional[str] = typer.Argument(None), all_: bool = typer.Option(False, "--all"),
+def update(games: Optional[list[str]] = typer.Argument(None, help="one or more games (default: pick one)"),
+           all_: bool = typer.Option(False, "--all", help="every install"),
+           only: Optional[str] = typer.Option(None, "--only",
+                                              help="components to update: nightly,optiscaler,mfgu,cyboman"),
+           to: Optional[str] = typer.Option(None, "--to", help="version for the one component in --only"),
+           allow_unverified: bool = typer.Option(False, "--allow-unverified",
+                                                 help="install a mix upstream does not document without asking"),
            no_refresh: bool = typer.Option(False, "--no-refresh", help="do not refresh the manifest first"),
            dry_run: bool = typer.Option(False, "--dry-run"), yes: bool = typer.Option(False, "--yes", "-y")):
-    """Refresh the manifest if needed, back up, and move installs to the current set."""
+    """Move components to the newest versions. Pinned components stay; --only picks components."""
     from .core.ops import install as ops
     from .core.ops.check import refresh
+    from .core.ops.components import parse_components
 
+    comps = parse_components(only)
+    if to and len(comps) != 1:
+        fail("--to needs exactly one component in --only")
     ctx = ctx_for(yes)
-    if not no_refresh and not dry_run:
+    if not no_refresh and not dry_run and not to:
         try:
             sid, changed = refresh(ctx, log=lambda s: con.print(f"  {s}", style="dim"))
             ctx.reload_manifest()
-            con.print(f"manifest: current set {sid}{' (new)' if changed else ''}")
+            con.print(f"manifest: current pairing {sid}{' (new)' if changed else ''}")
         except Exception as e:
             err.print(f"[yellow]manifest refresh failed ({e}); using the local manifest[/]")
-    games = installed_games(ctx) if all_ else [pick_installed(ctx, game)]
-    for g in games:
-        r = ops.update(ctx, g, dry_run=dry_run, yes=yes)
-        con.print(f"{g.title}: {r.message or 'not updated'}")
+    for g in _games(ctx, games, all_):
+        try:
+            r = ops.update(ctx, g, dry_run=dry_run, yes=yes, only=comps or None,
+                           to={comps[0]: to} if to else None, allow_unverified=allow_unverified)
+            con.print(f"{g.title}: {r.message or 'not updated'}")
+        except OpError as e:
+            err.print(f"[red]{g.title}:[/] {e}")
 
 
 @app.command()
 @guarded
-def rollback(game: Optional[str] = typer.Argument(None), to: Optional[str] = typer.Option(None, "--to", help="set id"),
+def rollback(game: Optional[str] = typer.Argument(None),
+             component: Optional[str] = typer.Option(None, "--component", "-c",
+                                                     help="only this component: nightly | optiscaler | mfgu | cyboman"),
+             to: Optional[str] = typer.Option(None, "--to", help="version (with --component) or set id"),
+             allow_unverified: bool = typer.Option(False, "--allow-unverified"),
              dry_run: bool = typer.Option(False, "--dry-run"), yes: bool = typer.Option(False, "--yes", "-y")):
-    """Return a game to a previously installed set."""
+    """Go back to the previous combination, or one component's previous version."""
     from .core.ops import install as ops
+    from .core.ops.components import parse_components
 
+    comp = parse_components([component])[0] if component else None
     ctx = ctx_for(yes)
     g = pick_installed(ctx, game)
-    r = ops.rollback(ctx, g, to, dry_run=dry_run, yes=yes)
+    r = ops.rollback(ctx, g, to, dry_run=dry_run, yes=yes, component=comp, allow_unverified=allow_unverified)
     con.print(f"{g.title}: {r.message or 'not changed'}")
+
+
+def _pin(games, all_, components, on: bool):
+    from .core.ops import components as comp
+
+    names = comp.parse_components(components, comp.PINNABLE)
+    if not names:
+        fail(f"name the components ({', '.join(comp.PINNABLE)})")
+    ctx = ctx_for()
+    for g in _games(ctx, games, all_):
+        done = comp.pin(ctx, g, names, on)
+        con.print(f"{g.title}: {'pinned' if on else 'unpinned'} {'; '.join(done)}")
+
+
+@app.command()
+@guarded
+def pin(games: Optional[list[str]] = typer.Argument(None, help="one or more games"),
+        all_: bool = typer.Option(False, "--all"),
+        component: list[str] = typer.Option([], "--component", "-c",
+                                            help="nightly | optiscaler | mfgu | fsr4 (repeat for several)")):
+    """Keep components at their current version: update skips them and check stops suggesting it."""
+    _pin(games, all_, component, True)
+
+
+@app.command()
+@guarded
+def unpin(games: Optional[list[str]] = typer.Argument(None),
+          all_: bool = typer.Option(False, "--all"),
+          component: list[str] = typer.Option([], "--component", "-c")):
+    """Let update move these components again."""
+    _pin(games, all_, component, False)
 
 
 @app.command()
@@ -549,7 +650,8 @@ def gc(dry_run: bool = typer.Option(False, "--dry-run"), yes: bool = typer.Optio
 
     ctx = ctx_for(yes)
     res = build_gc(ctx)
-    con.print(f"keeping sets: {', '.join(sorted(res.kept_sets))}; frees {res.freed >> 20} MB")
+    con.print(f"keeping (in use, in a game's history, pinned, or newest): {res.summary()}")
+    con.print(f"frees {res.freed >> 20} MB")
     run_plan(ctx, res.plan, dry_run, yes)
 
 

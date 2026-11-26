@@ -63,31 +63,25 @@ def install_batch(ctx: Context, games: list[Game], req: apply.Request, dry_run=F
     return results
 
 
-def update(ctx: Context, game: Game, set_id: str | None = None, dry_run=False, yes=False) -> Result:
-    st = ctx.state(game.exe.parent) if game.exe else None
-    if st is None:
-        raise OpError(f"{game.title}: not installed by xemfg")
-    target = set_id or ctx.manifest.current
-    if st.set == target:
-        return Result(game, True, f"already on {target}")
-    prep = apply.build(ctx, game, apply.Request(mode="update", set_id=target), dry_run=dry_run)
-    done = run_plan(ctx, prep.plan, dry_run, yes)
-    return Result(game, done, f"{st.set} -> {target}" if done else "")
+def update(ctx: Context, game: Game, set_id: str | None = None, dry_run=False, yes=False, only=None, to=None,
+           allow_unverified=False) -> Result:
+    """Move a game's components to the newest versions (pinned ones stay). `set_id`: a whole pairing."""
+    from . import components
+
+    if set_id:
+        to = {**ctx.manifest.versions_of(set_id), **(to or {})}
+    done, up = components.update(ctx, game, only, to, allow_unverified, dry_run, yes)
+    msg = up.message + ("; " + "; ".join(up.skipped) if up.skipped else "")
+    return Result(game, done, msg if done or up.prep is None else "")
 
 
-def rollback(ctx: Context, game: Game, to: str | None = None, dry_run=False, yes=False) -> Result:
-    st = ctx.state(game.exe.parent) if game.exe else None
-    if st is None:
-        raise OpError(f"{game.title}: not installed by xemfg")
-    prev = st.previous_sets
-    target = to or (prev[-1] if prev else None)
-    if not target:
-        raise OpError(f"{game.title}: no previous set recorded")
-    if to and to not in prev and to != st.set:
-        raise OpError(f"{game.title}: set {to} was never installed here (recorded: {', '.join(prev) or 'none'})")
-    prep = apply.build(ctx, game, apply.Request(mode="rollback", set_id=target), dry_run=dry_run)
-    done = run_plan(ctx, prep.plan, dry_run, yes)
-    return Result(game, done, f"{st.set} -> {target}" if done else "")
+def rollback(ctx: Context, game: Game, to: str | None = None, dry_run=False, yes=False, component=None,
+             allow_unverified=False) -> Result:
+    """Back to the previous combination, a set (`to`), or one component's previous (or `to`) version."""
+    from . import components
+
+    done, up = components.rollback(ctx, game, component, to, allow_unverified, dry_run, yes)
+    return Result(game, done, up.message if done else "")
 
 
 def repair(ctx: Context, game: Game, reset_ini=False, clean=False, dry_run=False, yes=False) -> Result:

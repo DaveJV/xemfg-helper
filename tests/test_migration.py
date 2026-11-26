@@ -62,7 +62,9 @@ def test_new_installs_are_schema_2(world, tmp_path):
                                              "family": "rx7000", "pinned": False,
                                              "sha256": sha(m.get("t1").raw["cy"]["4.1.2l-exact"])}
     assert d["gpu"] == {"profile": "rdna3", "slot": "0000:03:00.0", "chip": "Navi 33", "override": False}
-    assert d["history"][-1]["components"]["mfgu"] == "v-t1"
+    assert d["history"][-1]["components"] == {"nightly": "nightly-t1", "optiscaler": "mfgu-t1", "mfgu": "v-t1",
+                                              "fsr4_kind": "cyboman", "cyboman": "dll-t1",
+                                              "cyboman_variant": "4.1.2l-exact"}
     reg = json.loads(world.paths.registry_file.read_text())
     assert reg["schema"] == 2 and reg["installs"]["faugus:g"]["components"]["fsr4"]["variant"] == "4.1.2l-exact"
     assert not (root / ".xemfg/state.v1.json").exists() and not world.paths.registry_file.with_name(

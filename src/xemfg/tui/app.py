@@ -475,15 +475,25 @@ class XemfgApp(App):
     def _show_check(self, r) -> None:
         txt = self.query_one("#updates-text", Static)
         tab = self.query_one(TabbedContent).get_tab("updates")
+        lines = []
         if r.error:
-            txt.update(f"could not reach upstream: {r.error}\nLocal set: {r.local_current}")
+            lines.append(f"could not reach upstream: {r.error}\nComparing with the local manifest ({r.local_current}).")
         elif r.up_to_date:
-            extra = "\n".join(f"outdated install: {t} on {s}" for t, s in r.outdated_installs)
-            txt.update(f"Up to date: set {r.local_current} is the current upstream pairing.\n{extra}")
+            lines.append(f"Manifest up to date: {r.local_current} is the current upstream pairing.")
         else:
-            txt.update("Update available:\n" + "\n".join("  " + d for d in r.differences) +
-                       "\n\nUpdate all refreshes the manifest, backs up and moves every install.")
-        n = (0 if r.up_to_date or r.error else 1) + len(r.outdated_installs)
+            lines += ["Upstream has newer versions:"] + ["  " + d for d in r.differences]
+        if r.newest_sdk and not r.sdk_known:
+            lines.append(f"AMD released FSR SDK {r.newest_sdk}; xemfg's official DLL list does not have it yet.")
+        n = 0
+        for g in r.games:
+            lines.append(f"\n{g.title}")
+            for row in g.rows:
+                lines.append(f"  {row.component:10} {row.installed:40} {row.newest:28} {row.status}")
+                n += row.status == "update"
+            lines += [f"  unverified combination: {w}" for w in g.unverified]
+        lines.append("\nUpdate all moves every component that is not pinned (pin with `xemfg pin`).")
+        txt.update("\n".join(lines))
+        n += 0 if r.up_to_date or r.error else 1
         tab.label = f"Updates ({n})" if n else "Updates"
         self.update_banner()
 
@@ -499,23 +509,30 @@ class XemfgApp(App):
     @work(thread=True, exclusive=True, group="op")
     def update_all(self) -> None:
         from ..core.ops.check import refresh
+        from ..core.ops.components import plan_update
 
         try:
             sid, changed = refresh(self.ctx, self.post_log)
             self.ctx.reload_manifest()
         except Exception as e:
             self.post_log(f"[yellow]manifest refresh failed ({e}); using the local manifest[/]")
-            sid = self.ctx.manifest.current
-        preps = []
+        preps, notes = [], []
         for e in self.ctx.registry.active():
             g = self.ctx.library().by_key(e.key)
-            if g and e.set != sid:
-                try:
-                    preps.append(apply.build(self.ctx, g, apply.Request(mode="update", set_id=sid)))
-                except Exception as ex:
-                    self.post_log(f"[red]{e.title}: {ex}[/]")
+            if g is None:
+                continue
+            try:
+                up = plan_update(self.ctx, g)
+            except Exception as ex:
+                self.post_log(f"[red]{e.title}: {ex}[/]")
+                continue
+            notes += [f"{e.title}: {x}" for x in up.skipped]
+            if up.prep is not None:
+                preps.append(up.prep)
+        for n in notes:
+            self.post_log(n)
         if not preps:
-            self.post_log(f"every install is on {sid}")
+            self.post_log("every install is on the newest versions (pinned components left alone)")
             return
         text = "\n\n".join(p.plan.render() for p in preps)
 
@@ -523,7 +540,7 @@ class XemfgApp(App):
             if ok:
                 self.run_plans([p.plan for p in preps])
 
-        self.call_from_thread(self.push_screen, PlanScreen(f"Update {len(preps)} install(s) to {sid}?", text), after)
+        self.call_from_thread(self.push_screen, PlanScreen(f"Update {len(preps)} install(s)?", text), after)
 
     @work(thread=True, group="op")
     def run_plans(self, plans: list[Plan]) -> None:

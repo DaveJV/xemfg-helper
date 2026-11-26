@@ -218,6 +218,55 @@ class Manifest:
                 return pid
         return None
 
+    def compose(self, versions: dict[str, str]) -> XSet:
+        """The files of any combination of component versions (nightly, optiscaler, mfgu, cyboman).
+
+        Its id is the pairing it matches, or "custom" for a mix upstream does not document.
+        """
+        pid = self.pairing_for(versions)
+        files = {k: copy.deepcopy(self.component(k, versions[k])) for k in FILE_COMPONENTS}
+        cy = self.components.get("cyboman", {}).get(versions.get("cyboman", ""))
+        if versions.get("cyboman") and cy is None:
+            raise ManifestError(f"unknown cyboman version '{versions['cyboman']}'")
+        p = self.pairings.get(pid) if pid else None
+        mfgu = files["mfgu"].tag
+        return XSet(pid or "custom", p.mfgu if p else mfgu, p.created if p else "", files,
+                    cy.repo if cy else "", cy.tag if cy else "", copy.deepcopy(cy.families) if cy else {},
+                    p.notes if p else "custom combination")
+
+    def newest(self) -> dict[str, str]:
+        """The versions an update moves to: the current pairing's nightly, OptiScaler.dll and MFG Unlocker
+        (a combination upstream documents), and the newest cyboman release (it does not depend on them)."""
+        out = self.versions_of(self.current)
+        if self.latest.get("cyboman"):
+            out["cyboman"] = self.latest["cyboman"]
+        return out
+
+    def versions_of(self, pid: str) -> dict[str, str]:
+        p = self.pairings[pid]
+        return {k: getattr(p, k) for k in COMPONENTS if getattr(p, k)}
+
+    def unverified(self, versions: dict[str, str]) -> list[str]:
+        """Why a combination is not one upstream documents ([] when it is).
+
+        Upstream (MFG Unlocker's docs/optiscaler.md and dashdogy's release notes) pairs each MFG Unlocker
+        release with one dashdogy OptiScaler.dll, built from one nightly's commit. Those two links are the
+        dependencies; cyboman's DLLs do not depend on them.
+        """
+        if self.pairing_for(versions):
+            return []
+        out = []
+        o, n, m = versions.get("optiscaler"), versions.get("nightly"), versions.get("mfgu")
+        if not any(p.optiscaler == o and p.nightly == n for p in self.pairings.values()):
+            paired = sorted({p.nightly for p in self.pairings.values() if p.optiscaler == o})
+            out.append(f"dashdogy OptiScaler {o} is documented with {' / '.join(paired) or 'no known nightly'}, "
+                       f"not {n}")
+        if not any(p.optiscaler == o and p.mfgu == m for p in self.pairings.values()):
+            paired = sorted({p.mfgu for p in self.pairings.values() if p.optiscaler == o})
+            out.append(f"dashdogy OptiScaler {o} is documented with MFG Unlocker {' / '.join(paired) or '?'}, "
+                       f"not {m}")
+        return out
+
     @property
     def current_set(self) -> XSet:
         return self.get(self.current)

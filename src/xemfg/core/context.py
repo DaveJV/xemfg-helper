@@ -148,13 +148,14 @@ class Context:
             self._compat[game.key] = compat_mod.analyze(game, m.optiscaler_hashes(), m.cyboman_by_hash())
         return self._compat[game.key]
 
-    def cache(self, set_id: str) -> SetCache:
-        xs = self.manifest.get(set_id)
+    def cache(self, xset_or_id) -> SetCache:
+        """The download cache for a pairing id or a composed XSet (any mix of component versions)."""
+        xs = self.manifest.get(xset_or_id) if isinstance(xset_or_id, str) else xset_or_id
 
         def prog(done, total):
             self.ui.progress("download", done, total)
 
-        return SetCache(self.paths.set_cache(set_id), xs, self.fetcher, self.ui.log, prog)
+        return SetCache(self.paths.cache_dir, xs, self.fetcher, self.ui.log, prog)
 
     def steam_running(self) -> bool:
         if self.steam_running_fn:

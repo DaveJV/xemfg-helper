@@ -2,10 +2,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..context import Context
-from ..manifest import XSet
-from ..upstream import Upstream
+from ..manifest import Manifest, XSet
+from ..upstream import Upstream, merge_into
+
+
+@dataclass
+class GameCheck:
+    title: str
+    key: str
+    rows: list  # components.Row
+    unverified: list[str]
 
 
 @dataclass
@@ -16,6 +25,10 @@ class CheckResult:
     differences: list[str] = field(default_factory=list)
     outdated_installs: list[tuple[str, str]] = field(default_factory=list)  # (title, set)
     error: str | None = None
+    games: list[GameCheck] = field(default_factory=list)
+    newest_nightly: str | None = None  # newest OptiScaler nightly upstream (may be newer than the paired one)
+    newest_sdk: str | None = None  # newest AMD FSR SDK release
+    sdk_known: bool = True  # whether xemfg's catalog already has that SDK's DLLs
 
 
 def diff_sets(local: XSet, new: XSet) -> list[str]:
@@ -32,19 +45,44 @@ def diff_sets(local: XSet, new: XSet) -> list[str]:
 
 
 def check(ctx: Context, log=lambda s: None) -> CheckResult:
+    """Read-only: what upstream has now, and per game each component installed vs the newest.
+
+    The per-game comparison uses upstream's current pairing when it could be read, otherwise the manifest.
+    Nothing is saved; `xemfg update` (or `manifest refresh`) does that.
+    """
+    from .. import fsr4
+    from .components import rows
+
     m = ctx.manifest
     res = CheckResult(None, m.current, True)
     res.outdated_installs = [(e.title, e.set) for e in ctx.registry.active() if e.set != m.current]
+    up = Upstream(ctx.fetcher)
+    newest = m.newest()
     try:
-        latest = Upstream(ctx.fetcher).resolve(log)
+        latest = up.resolve(log)
+        res.latest = latest
+        known = next((sid for sid, s in m.sets.items() if s.same_content(latest)), None)
+        if known != m.current:
+            res.up_to_date = False
+            res.differences = diff_sets(m.current_set, latest)
+        tmp = Manifest(m.current, {k: dict(v) for k, v in m.components.items()}, dict(m.pairings), dict(m.latest))
+        merge_into(tmp, latest)
+        newest = tmp.newest()
     except Exception as e:
         res.error = str(e)
-        return res
-    res.latest = latest
-    known = next((sid for sid, s in m.sets.items() if s.same_content(latest)), None)
-    if known != m.current:
-        res.up_to_date = False
-        res.differences = diff_sets(m.current_set, latest)
+    for name, fn in (("newest_nightly", up.newest_nightly), ("newest_sdk", up.newest_sdk)):
+        try:
+            setattr(res, name, fn())
+        except Exception as e:
+            log(f"could not read the {name.replace('_', ' ')}: {e}")
+    if res.newest_sdk:
+        res.sdk_known = any(d.sdk_tag == res.newest_sdk for d in fsr4.OFFICIAL)
+    for e in ctx.registry.active():
+        st = ctx.state(Path(e.exe_dir))
+        if st is None or not st.components:
+            continue
+        r, unverified = rows(ctx, st, newest)
+        res.games.append(GameCheck(e.title, e.key, r, unverified))
     return res
 
 

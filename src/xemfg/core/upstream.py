@@ -12,13 +12,14 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .manifest import CybomanFamily, FileSpec, Manifest, XSet
+from .manifest import CybomanFamily, CybomanRelease, FileSpec, Manifest, XSet
 from .net import Fetcher, FetchError
 
 MFGU_REPO = "dashdogy/MFG-Unlocker"
 OPTI_REPO = "dashdogy/OptiScaler"
 NIGHTLY_REPO = "optiscaler/OptiScaler-nightly"
 CYBOMAN_REPO = "zgauthier2000/fsr4-shader-performance-overrides"
+SDK_REPO = "GPUOpen-LibrariesAndSDKs/FidelityFX-SDK"
 
 
 class UpstreamError(RuntimeError):
@@ -158,55 +159,82 @@ class Upstream:
 
     # ------------------------------------------------------------ resolve
 
+    # ------------------------------------------------------------ one component at a time
+    def mfgu_spec(self, tag: str) -> FileSpec:
+        sums = parse_sha256sums(self.release_file(MFGU_REPO, tag, "SHA256SUMS.txt"))
+        zips = [n for n in sums if n.lower().endswith(".zip") and "mfgunlocker" in n.lower()]
+        if len(zips) != 1:
+            raise UpstreamError(f"expected one MFGUnlocker zip in SHA256SUMS.txt, found {zips}")
+        inner = {n: h for n, h in sums.items() if n.lower() == "mfgunlocker.dll"}
+        return FileSpec("mfgu", MFGU_REPO, tag, zips[0], sums[zips[0]], "sha256sums",
+                        inner_sha256={"MFGUnlocker.dll": h for h in inner.values()},
+                        created=dt.date.today().isoformat())
+
+    def optiscaler_spec(self, tag: str, log=lambda s: None) -> FileSpec:
+        assets = {a.name: a for a in self.assets(OPTI_REPO, tag)}
+        if "OptiScaler.dll" not in assets:
+            raise UpstreamError(f"{OPTI_REPO}@{tag} has no OptiScaler.dll")
+        oa = assets["OptiScaler.dll"]
+        if oa.sha256:
+            sha, how = oa.sha256, oa.source
+        else:
+            log("no published digest for dashdogy OptiScaler.dll; hashing the download (tofu)")
+            sha, how = self.tofu_hash(OPTI_REPO, tag, oa.name), "tofu"
+        return FileSpec("optiscaler", OPTI_REPO, tag, oa.name, sha, how, cache_name="OptiScaler-mfgu.dll",
+                        created=dt.date.today().isoformat())
+
+    def nightly_spec(self, tag: str) -> FileSpec:
+        archives = [a for a in self.assets(NIGHTLY_REPO, tag) if a.name.lower().endswith((".7z", ".zip"))]
+        if len(archives) != 1:
+            raise UpstreamError(f"expected one OptiScaler archive in {tag}, found {[a.name for a in archives]}")
+        na = archives[0]
+        sha = na.sha256 or self.tofu_hash(NIGHTLY_REPO, tag, na.name)
+        return FileSpec("nightly", NIGHTLY_REPO, tag, na.name, sha, na.source if na.sha256 else "tofu",
+                        created=dt.date.today().isoformat())
+
+    def cyboman_release(self, tag: str) -> CybomanRelease:
+        fams = cyboman_families(parse_sha256sums(self.release_file(CYBOMAN_REPO, tag, "SHA256SUMS")))
+        if not fams:
+            raise UpstreamError(f"cyboman {tag}: SHA256SUMS lists no archives/DLLs")
+        return CybomanRelease(tag, CYBOMAN_REPO, fams, dt.date.today().isoformat())
+
+    def component(self, kind: str, tag: str, log=lambda s: None):
+        """One release of one component, verified the same way as a full refresh."""
+        if kind == "mfgu":
+            return self.mfgu_spec(tag)
+        if kind == "optiscaler":
+            return self.optiscaler_spec(tag, log)
+        if kind == "nightly":
+            return self.nightly_spec(tag)
+        if kind == "cyboman":
+            return self.cyboman_release(tag)
+        raise UpstreamError(f"unknown component {kind}")
+
+    def newest_nightly(self) -> str:
+        """The newest OptiScaler nightly (usually newer than the one MFG Unlocker pairs with)."""
+        return self.latest_tag(NIGHTLY_REPO, prefix="nightly-")
+
+    def newest_sdk(self) -> str:
+        """The newest AMD FSR SDK release (where official FSR4 DLLs come from)."""
+        return self.latest_tag(SDK_REPO)
+
+    # ------------------------------------------------------------ resolve the current pairing
     def resolve(self, log=lambda s: None) -> XSet:
         mfgu_tag = self.latest_tag(MFGU_REPO)
         log(f"MFG Unlocker latest: {mfgu_tag}")
         md = self.raw(MFGU_REPO, mfgu_tag, "docs/optiscaler.md")
         opti_tag, nightly_tag = parse_which_build(md, mfgu_tag)
         log(f"paired with {OPTI_REPO}@{opti_tag} and {NIGHTLY_REPO}@{nightly_tag} (docs/optiscaler.md)")
-
-        # MFG Unlocker zip + inner dll from SHA256SUMS.txt
-        sums = parse_sha256sums(self.release_file(MFGU_REPO, mfgu_tag, "SHA256SUMS.txt"))
-        zips = [n for n in sums if n.lower().endswith(".zip") and "mfgunlocker" in n.lower()]
-        if len(zips) != 1:
-            raise UpstreamError(f"expected one MFGUnlocker zip in SHA256SUMS.txt, found {zips}")
-        inner = {n: h for n, h in sums.items() if n.lower() == "mfgunlocker.dll"}
-        mfgu = FileSpec("mfgu", MFGU_REPO, mfgu_tag, zips[0], sums[zips[0]], "sha256sums",
-                        inner_sha256={"MFGUnlocker.dll": h for h in inner.values()})
-
-        # dashdogy OptiScaler.dll
-        opti_assets = {a.name: a for a in self.assets(OPTI_REPO, opti_tag)}
-        if "OptiScaler.dll" not in opti_assets:
-            raise UpstreamError(f"{OPTI_REPO}@{opti_tag} has no OptiScaler.dll")
-        oa = opti_assets["OptiScaler.dll"]
-        if oa.sha256:
-            opti = FileSpec("optiscaler", OPTI_REPO, opti_tag, oa.name, oa.sha256, oa.source,
-                            cache_name="OptiScaler-mfgu.dll")
-        else:
-            log("no published digest for dashdogy OptiScaler.dll; hashing the download (tofu)")
-            opti = FileSpec("optiscaler", OPTI_REPO, opti_tag, oa.name, self.tofu_hash(OPTI_REPO, opti_tag, oa.name),
-                            "tofu", cache_name="OptiScaler-mfgu.dll")
-
-        # nightly archive
-        n_assets = [a for a in self.assets(NIGHTLY_REPO, nightly_tag) if a.name.lower().endswith((".7z", ".zip"))]
-        if len(n_assets) != 1:
-            raise UpstreamError(f"expected one OptiScaler archive in {nightly_tag}, found {[a.name for a in n_assets]}")
-        na = n_assets[0]
-        nsha = na.sha256 or self.tofu_hash(NIGHTLY_REPO, nightly_tag, na.name)
-        nightly = FileSpec("nightly", NIGHTLY_REPO, nightly_tag, na.name, nsha, na.source if na.sha256 else "tofu")
-
-        # cyboman
+        mfgu = self.mfgu_spec(mfgu_tag)
+        opti = self.optiscaler_spec(opti_tag, log)
+        nightly = self.nightly_spec(nightly_tag)
         cy_tag = self.latest_tag(CYBOMAN_REPO, prefix="dll-")
-        cy_sums = parse_sha256sums(self.release_file(CYBOMAN_REPO, cy_tag, "SHA256SUMS"))
-        fams = cyboman_families(cy_sums)
-        if not fams:
-            raise UpstreamError(f"cyboman {cy_tag}: SHA256SUMS lists no archives/DLLs")
-        log(f"cyboman FSR4 DLLs: {cy_tag} ({', '.join(fams)})")
-
+        cy = self.cyboman_release(cy_tag)
+        log(f"cyboman FSR4 DLLs: {cy_tag} ({', '.join(cy.families)})")
         return XSet(
             id=mfgu_tag, mfgu_version=mfgu_tag, created=dt.date.today().isoformat(),
             files={"nightly": nightly, "optiscaler": opti, "mfgu": mfgu},
-            cyboman_repo=CYBOMAN_REPO, cyboman_tag=cy_tag, families=fams,
+            cyboman_repo=CYBOMAN_REPO, cyboman_tag=cy_tag, families=cy.families,
             notes=f"MFG Unlocker {mfgu_tag} + {OPTI_REPO}@{opti_tag} + {nightly_tag}; cyboman {cy_tag}",
         )
 
@@ -231,3 +259,20 @@ def merge_into(manifest: Manifest, new: XSet) -> tuple[str, bool]:
     manifest.current = sid
     manifest.set_latest_from(sid)
     return sid, True
+
+
+def add_component(manifest: Manifest, kind: str, spec) -> tuple[str, bool]:
+    """Add one resolved release to the manifest (pairings and `latest` stay). Returns (version, added)."""
+    have = manifest.components.setdefault(kind, {})
+    v = spec.tag
+    if v in have:
+        if kind == "cyboman":
+            same = {n: (f.archives, f.dlls) for n, f in have[v].families.items()} == \
+                {n: (f.archives, f.dlls) for n, f in spec.families.items()}
+        else:
+            same = have[v].sha256 == spec.sha256
+        if same:
+            return v, False
+        v = f"{spec.tag}+{(spec.sha256 if kind != 'cyboman' else 'new')[:8]}"
+    have[v] = spec
+    return v, True

@@ -1,9 +1,14 @@
-"""Download cache (~/.cache/xemfg/<set>/): download, verify SHA-256, extract.
+"""Download cache, one folder per component version: download, verify SHA-256, extract.
 
-A file is only ever used after its hash matched; a mismatch deletes it and aborts.
+    ~/.cache/xemfg/<component>/<tag>_<sha8>/<file>   (+ x/ when extracted)
+    ~/.cache/xemfg/cyboman/<tag>/<archive>            (+ <family>/ when extracted)
+
+A file is only ever used after its hash matched; a mismatch deletes it and aborts. Files in the
+per-set folders of xemfg 0.1 and xemfg-linux.sh (~/.cache/xemfg/<set>/) are reused when their hash matches.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -60,25 +65,55 @@ def _check_tree(root: Path) -> None:
             raise ExtractError(f"archive contains a symlink: {p.relative_to(root)}")
 
 
+def component_dir(root: Path, spec: FileSpec) -> Path:
+    return root / spec.key / f"{spec.tag}_{spec.sha256[:8]}"
+
+
 class SetCache:
+    """The verified files of one combination of component versions (`xset`)."""
+
     def __init__(self, cache_dir: Path, xset: XSet, fetcher: Fetcher,
                  log: Callable[[str], None] = lambda s: None, progress: Progress | None = None):
-        self.dir = cache_dir
+        self.root = cache_dir
         self.xset = xset
         self.fetcher = fetcher
         self.log = log
         self.progress = progress
 
-    def _fetch_verified(self, url: str, name: str, sha256: str) -> Path:
-        self.dir.mkdir(parents=True, exist_ok=True)
-        path = self.dir / name
-        for cand in [path] + [self.dir / n for n in LEGACY_NAMES.get(path.suffix, [])]:
-            if cand.is_file():
-                if sha256_or_none(cand) == sha256:
+    @property
+    def dir(self) -> Path:  # where new downloads land, for messages
+        return self.root
+
+    def _legacy(self, names: list[str], sha256: str) -> Path | None:
+        """A file with the right hash in an old per-set folder (xemfg 0.1, xemfg-linux.sh)."""
+        if not self.root.is_dir():
+            return None
+        for d in sorted(self.root.iterdir()):
+            if not d.is_dir() or d.name in ("nightly", "optiscaler", "mfgu", "cyboman"):
+                continue
+            for n in names:
+                cand = d / n
+                if cand.is_file() and sha256_or_none(cand) == sha256:
                     return cand
-                if cand == path:
-                    self.log(f"cached {name} has the wrong hash; deleting")
-                    cand.unlink()
+        return None
+
+    def _fetch_verified(self, url: str, dest_dir: Path, name: str, sha256: str) -> Path:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = dest_dir / name
+        if path.is_file():
+            if sha256_or_none(path) == sha256:
+                return path
+            self.log(f"cached {name} has the wrong hash; deleting")
+            path.unlink()
+        old = self._legacy([name, *LEGACY_NAMES.get(path.suffix, [])], sha256)
+        if old is not None:
+            try:
+                os.link(old, path)
+            except OSError:
+                shutil.copy2(old, path)
+            if sha256_or_none(path) == sha256:
+                return path
+            path.unlink(missing_ok=True)
         self.log(f"downloading {url}")
         self.fetcher.download(url, path, self.progress)
         got = sha256_or_none(path)
@@ -88,11 +123,11 @@ class SetCache:
         return path
 
     def file(self, spec: FileSpec) -> Path:
-        return self._fetch_verified(spec.url, spec.filename, spec.sha256)
+        return self._fetch_verified(spec.url, component_dir(self.root, spec), spec.filename, spec.sha256)
 
-    def _extracted(self, spec: FileSpec, subdir: str) -> Path:
+    def _extracted(self, spec: FileSpec) -> Path:
         archive = self.file(spec)
-        dest = self.dir / subdir
+        dest = component_dir(self.root, spec) / "x"
         marker = dest / ".xemfg-extracted"
         if marker.is_file() and marker.read_text().strip() == spec.sha256:
             return dest
@@ -102,7 +137,7 @@ class SetCache:
         return dest
 
     def nightly_dir(self) -> Path:
-        d = self._extracted(self.xset.nightly, "nightly")
+        d = self._extracted(self.xset.nightly)
         if not (d / "OptiScaler").is_dir() or not (d / "OptiScaler.ini").is_file():
             raise ExtractError(f"{self.xset.nightly.asset} has no OptiScaler folder / OptiScaler.ini")
         return d
@@ -111,7 +146,7 @@ class SetCache:
         return self.file(self.xset.optiscaler)
 
     def mfgu_dll(self) -> Path:
-        d = self._extracted(self.xset.mfgu, "mfgu")
+        d = self._extracted(self.xset.mfgu)
         dll = next((p for p in d.rglob("*") if p.name.lower() == "mfgunlocker.dll"), None)
         if dll is None:
             raise ExtractError("MFGUnlocker.dll not found in the MFG Unlocker zip")
@@ -121,20 +156,23 @@ class SetCache:
             raise HashMismatch("MFGUnlocker.dll inside the zip has the wrong hash; deleted the extraction")
         return dll
 
+    def cyboman_dir(self) -> Path:
+        return self.root / "cyboman" / self.xset.cyboman_tag
+
     def cyboman_dll(self, family: str, choice: str) -> Path | None:
         if choice == "none":
             return None
         fam = self.xset.family(family)
         vdir = fam.variant_dir(choice)
         want = fam.dlls[vdir]
-        dest = self.dir / f"cyboman-{family}"
+        dest = self.cyboman_dir() / family
         target = dest / vdir / "amd_fidelityfx_upscaler_dx12.dll"
         if sha256_or_none(target) == want:
             return target
         errors = []
         for asset, sha in fam.archives:  # .7z first; the .zip is the fallback, as in the script
             try:
-                archive = self._fetch_verified(self.xset.cyboman_url(asset), asset, sha)
+                archive = self._fetch_verified(self.xset.cyboman_url(asset), self.cyboman_dir(), asset, sha)
                 extract(archive, dest)
             except ExtractError as e:
                 errors.append(str(e))
@@ -146,6 +184,22 @@ class SetCache:
                 return found
             errors.append(f"{asset}: {vdir} DLL missing or wrong hash")
         raise HashMismatch(f"cyboman {family}/{vdir}: " + "; ".join(errors))
+
+    def ready(self, fsr4: str, family: str) -> bool:
+        """Everything for this combination is already downloaded, verified and extracted."""
+        xs = self.xset
+
+        def extracted(spec):
+            m = component_dir(self.root, spec) / "x/.xemfg-extracted"
+            return m.is_file() and m.read_text().strip() == spec.sha256
+
+        ok = extracted(xs.nightly) and extracted(xs.mfgu) and \
+            sha256_or_none(component_dir(self.root, xs.optiscaler) / xs.optiscaler.filename) == xs.optiscaler.sha256
+        if ok and fsr4 != "none":
+            fam = xs.family(family)
+            vdir = fam.variant_dir(fsr4)
+            ok = sha256_or_none(self.cyboman_dir() / family / vdir / "amd_fidelityfx_upscaler_dx12.dll") == fam.dlls[vdir]
+        return ok
 
     def prefetch(self, family: str, choice: str) -> None:
         self.nightly_dir()

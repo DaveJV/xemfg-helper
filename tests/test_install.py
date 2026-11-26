@@ -170,10 +170,12 @@ def test_update_then_rollback(env, tmp_path):
     path = root / "OptiScaler.ini"
     ini.write_text(path, ini.read_text(path).replace("[DLSSG]\r\nFramerateTargetDMFG=auto", "[DLSSG]\r\nFramerateTargetDMFG=99"))
     m.current = "t2"
+    m.set_latest_from("t2")  # what `manifest refresh` does
     m.save(world.paths.manifest_file)
     ctx.reload_manifest()
     r = ops.update(ctx, g, yes=True)
-    assert r.ok and r.message == "t1 -> t2"
+    assert r.ok and r.message == ("nightly nightly-t1 -> nightly-t2; optiscaler mfgu-t1 -> mfgu-t2; "
+                                  "mfgu v-t1 -> v-t2; cyboman dll-t1 -> dll-t2")
     t2 = m.get("t2")
     assert sha((root / "dxgi.dll").read_bytes()) == t2.optiscaler.sha256
     assert (root / "OptiScaler/new_in_t2.dll").exists() and not (root / "OptiScaler/only_in_t1.dll").exists()
@@ -183,7 +185,8 @@ def test_update_then_rollback(env, tmp_path):
     reg = json.loads(world.paths.registry_file.read_text())["installs"]["faugus:g"]
     assert reg["set"] == "t2" and reg["previous_sets"] == ["t1"]
     r = ops.rollback(ctx, g, yes=True)
-    assert r.message == "t2 -> t1"
+    assert r.message == ("nightly nightly-t2 -> nightly-t1; optiscaler mfgu-t2 -> mfgu-t1; "
+                         "mfgu v-t2 -> v-t1; cyboman dll-t2 -> dll-t1")
     assert sha((root / "dxgi.dll").read_bytes()) == m.get("t1").optiscaler.sha256
     assert (root / "OptiScaler/only_in_t1.dll").exists() and not (root / "OptiScaler/new_in_t2.dll").exists()
     assert ini.Ini(ini.read_text(path)).get("DLSSG", "FramerateTargetDMFG") == "99"
@@ -213,4 +216,4 @@ def test_hash_mismatch_aborts_and_deletes(env, tmp_path):
     with pytest.raises(HashMismatch):
         ops.install(ctx, ctx.resolve("Game"), apply.Request(), yes=True)
     assert not (root / "dxgi.dll").exists()
-    assert not (world.paths.set_cache("t1") / "OptiScaler-mfgu.dll").exists()
+    assert not list(world.paths.cache_dir.rglob("OptiScaler-mfgu.dll"))

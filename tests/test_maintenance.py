@@ -136,17 +136,22 @@ def test_gc_keeps_sets_in_use(installed, tmp_path):
     m.save(world.paths.manifest_file)
     ctx.reload_manifest()
     ops.update(ctx, g, yes=True)
-    stale = world.paths.cache_dir / "old-set"
+    cache = world.paths.cache_dir
+    stale = cache / "old-set"  # a per-set folder of xemfg 0.1 nobody uses
     (stale / "nightly").mkdir(parents=True)
     (stale / "nightly/x").write_bytes(b"x")
-    (world.paths.set_cache("t2") / "junk.part").write_bytes(b"p")
+    unused = cache / "nightly/nightly-t0_deadbeef"  # a component version nobody uses
+    unused.mkdir(parents=True)
+    (unused / "Opti-t0.zip").write_bytes(b"z")
+    (cache / "nightly/junk.part").write_bytes(b"p")
     res = gc.build_gc(ctx)
-    assert res.kept_sets >= {"t1", "t2"}
+    assert res.kept["nightly"] >= {"nightly-t1", "nightly-t2"} and res.kept["cyboman"] >= {"dll-t1"}
     deleted = {o.dest for o in res.plan.ops if o.kind == "delete"}
-    assert stale / "nightly/x" in deleted and world.paths.set_cache("t2") / "junk.part" in deleted
-    assert not any(str(world.paths.set_cache("t1")) in str(d) for d in deleted)
+    assert stale / "nightly/x" in deleted and unused / "Opti-t0.zip" in deleted and cache / "nightly/junk.part" in deleted
+    in_use = [d for d in (cache / "nightly").iterdir() if d.name.startswith(("nightly-t1_", "nightly-t2_"))]
+    assert len(in_use) == 2 and not any(str(d) in str(x) for d in in_use for x in deleted)
     run_plan(ctx, res.plan, yes=True)
-    assert not stale.exists() and world.paths.set_cache("t1").exists()
+    assert not stale.exists() and not unused.exists() and all(d.exists() for d in in_use)
     assert other.exists()
 
 

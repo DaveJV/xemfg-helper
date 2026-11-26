@@ -120,7 +120,16 @@ def check_entry(ctx: Context, e: Entry) -> Health:
     else:
         h.add("info", "no longer listed by Steam/Faugus (launch options not checked)")
 
-    if e.set != ctx.manifest.current:
+    if st.components:
+        from .components import rows
+
+        r, unverified = rows(ctx, st)
+        stale = [f"{x.component} {x.installed} -> {x.newest}" for x in r if x.status == "update"]
+        if stale:
+            h.add("outdated", "newer: " + "; ".join(stale), f"xemfg update {_q(e)}")
+        for why in unverified:
+            h.add("info", f"unverified combination: {why}")
+    elif e.set != ctx.manifest.current:
         h.add("outdated", f"on {e.set}, current is {ctx.manifest.current}", f"xemfg update {_q(e)}")
     return h
 

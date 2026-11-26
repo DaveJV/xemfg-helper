@@ -12,6 +12,7 @@ from ..backends.xemfg import UPSCALER_DLL
 from ..context import Context
 from ..fsutil import sha256_file, sha256_or_none
 from ..launchers import faugus_writer, steam_writer
+from ..manifest import FILE_COMPONENTS
 from ..models import Game, Tier
 from ..mods import cyboman_build
 from ..plan import Plan, TextChange
@@ -37,6 +38,8 @@ class Request:
     mode: str = "install"  # install | update | rollback | repair
     reset_ini: bool = False
     fsr4_explicit: bool = False
+    versions: dict[str, str] | None = None  # component -> version to install (overrides the defaults)
+    allow_unverified: bool = False  # a mix upstream does not document, without asking again
 
 
 @dataclass
@@ -46,6 +49,8 @@ class Prepared:
     opts: Options
     set_id: str
     needs_download: list[str] = field(default_factory=list)
+    versions: dict[str, str] = field(default_factory=dict)
+    unverified: list[str] = field(default_factory=list)  # why the mix is not one upstream documents
 
 
 def _timestamp() -> str:
@@ -96,6 +101,29 @@ def check_tier(ctx: Context, game: Game, req: Request) -> list[str]:
     return warnings
 
 
+def target_versions(ctx: Context, state: GameState | None, req: Request) -> dict[str, str]:
+    """Component versions to install: install takes the newest known; the other modes keep what the game has.
+
+    Explicit `req.versions` (update, rollback, pin) win; a pairing id (`req.set_id`) means all of its components.
+    """
+    m = ctx.manifest
+    if req.set_id:
+        base = m.versions_of(req.set_id)
+    elif state is not None and req.mode != "install" and state.components:
+        base = {k: state.components[k]["version"] for k in FILE_COMPONENTS if k in state.components}
+        fsr = state.components.get("fsr4", {})
+        if fsr.get("kind") == "cyboman" and fsr.get("version"):
+            base["cyboman"] = fsr["version"]
+    elif state is not None and req.mode != "install" and state.set in m.pairings:
+        base = m.versions_of(state.set)
+    else:
+        base = m.newest()
+    if "cyboman" not in base and m.newest().get("cyboman"):
+        base["cyboman"] = m.newest()["cyboman"]
+    base.update(req.versions or {})
+    return base
+
+
 def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prepared:
     exe_dir = require_exe(game)
     state = ctx.state(exe_dir)
@@ -107,8 +135,10 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
             raise OpError(f"{game.title}: not installed by xemfg (no {STATE_DIR}/state.json)")
         warnings = []
     opts = resolve_options(ctx, game, req, state)
-    set_id = req.set_id or (state.set if state and req.mode == "repair" else ctx.manifest.current)
-    xset = ctx.manifest.get(set_id)
+    versions = target_versions(ctx, state, req)
+    xset = ctx.manifest.compose(versions)
+    set_id = xset.id
+    unverified = ctx.manifest.unverified(versions)
     osh = ctx.manifest.optiscaler_hashes()
 
     # ---- proxy conflicts
@@ -123,6 +153,9 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
 
     plan = Plan(f"{req.mode} {xset.id} -> {game.title}", base=exe_dir)
     plan.warnings += warnings
+    if unverified:
+        plan.warnings.append("UNVERIFIED COMBINATION (upstream does not document it; it may crash): "
+                             + "; ".join(unverified))
     if req.mode == "install":
         _note_fsr4(ctx, game, plan)
     ts = _timestamp()
@@ -139,9 +172,9 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
             plan.notes.append(f"keeping the existing cyboman FSR4 DLL ({cy}); pass --fsr4 to replace it")
 
     # ---- what goes where
-    cache = ctx.cache(set_id)
+    cache = ctx.cache(xset)
     try:
-        if dry_run and not _cache_ready(cache, opts):
+        if dry_run and not cache.ready(opts.fsr4, opts.gpu_family):
             raise _NotCached()
         placements = backend.placements(cache, opts, keep_fsr4)
         template = backend.ini_template(cache)
@@ -194,7 +227,7 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
         files[UPSCALER_DLL] = ManagedFile("kept", sha256_or_none(up_path) or "", None, sha256_or_none(up_path), "fsr4")
 
     new_state.files = files
-    _record_components(ctx, new_state, state, set_id, opts)
+    _record_components(ctx, new_state, state, versions, opts, xset)
 
     # ---- OptiScaler.ini
     _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, backup_dir,
@@ -206,29 +239,42 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
     # ---- state + registry, after the files
     new_state.history = (state.history if state else []) + [
         {"set": set_id, "at": now(), "action": req.mode,
-         "components": {k: v.get("version") for k, v in new_state.components.items()}}]
+         "components": history_versions(new_state.components)}]
 
     def commit():
         new_state.save(exe_dir)
         _register(ctx, game, new_state)
 
     plan.after.append(commit)
-    return Prepared(game, plan, opts, set_id)
+    return Prepared(game, plan, opts, set_id, versions=versions, unverified=unverified)
 
 
 class _NotCached(Exception):
     pass
 
 
-def _record_components(ctx: Context, new_state: GameState, state: GameState | None, set_id: str,
-                       opts: Options) -> None:
-    """Schema 2: each component's version, what the FSR4 slot holds, and the GPU it was chosen for."""
-    from ..migrate import file_components, fsr4_component
+def history_versions(comps: dict) -> dict[str, str]:
+    """What a history entry records: each file component's version, the FSR4 slot's kind, and the cyboman
+    release when the slot holds one (what rollback and gc read back)."""
+    out = {k: comps[k]["version"] for k in FILE_COMPONENTS if k in comps}
+    fsr = comps.get("fsr4", {})
+    if fsr:
+        out["fsr4_kind"] = fsr.get("kind")
+        if fsr.get("kind") == "cyboman":
+            out["cyboman"] = fsr.get("version")
+            out["cyboman_variant"] = fsr.get("variant")
+    return out
 
-    comps = file_components(ctx.manifest, set_id)
+
+def _record_components(ctx: Context, new_state: GameState, state: GameState | None, versions: dict[str, str],
+                       opts: Options, xset) -> None:
+    """Schema 2: each component's version, what the FSR4 slot holds, and the GPU it was chosen for."""
+    from ..migrate import fsr4_component
+
+    comps = {k: {"version": versions[k]} for k in FILE_COMPONENTS}
     slot = new_state.files.get(UPSCALER_DLL)
-    comps["fsr4"] = fsr4_component(ctx.manifest, set_id, opts.to_dict(), slot.action if slot else None,
-                                   slot.sha256 if slot else None)
+    comps["fsr4"] = fsr4_component(ctx.manifest, xset.id, opts.to_dict(), slot.action if slot else None,
+                                   slot.sha256 if slot else None, xset=xset, nightly=versions["nightly"])
     for k, c in comps.items():  # pins stay
         c["pinned"] = bool(state and state.pinned(k))
     new_state.components = comps
@@ -250,18 +296,6 @@ def _note_fsr4(ctx: Context, game: Game, plan: Plan) -> None:
             plan.notes.append(f"the game ships {d.rel}: {d.label()}; OptiScaler runs its own copy instead")
         elif d.role == "combined":
             plan.notes.append(f"the game ships {d.rel}: {d.label()}; left alone, FSR4 comes from OptiScaler's copy")
-
-
-def _cache_ready(cache, opts: Options) -> bool:
-    xs = cache.xset
-    ok = (cache.dir / "nightly/.xemfg-extracted").is_file() and \
-        sha256_or_none(cache.dir / xs.optiscaler.filename) == xs.optiscaler.sha256 and \
-        (cache.dir / "mfgu/.xemfg-extracted").is_file()
-    if ok and opts.fsr4 != "none":
-        fam = xs.family(opts.gpu_family)
-        vdir = fam.variant_dir(opts.fsr4)
-        ok = sha256_or_none(cache.dir / f"cyboman-{opts.gpu_family}" / vdir / "amd_fidelityfx_upscaler_dx12.dll") == fam.dlls[vdir]
-    return ok
 
 
 def _coarse_placements(xset, opts: Options, keep_fsr4: bool) -> list[Placement]:
