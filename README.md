@@ -4,6 +4,12 @@ Installs and maintains XeMFG (Intel's XeSS multi frame generation, unlocked for 
 MFG Unlocker) through OptiScaler, for Windows games running under Proton. It finds your Steam and Faugus
 Launcher games itself, sets everything up in one step and keeps it up to date.
 
+<p align="center">
+  <img src="docs/ffxvi-xemfg.png" alt="OptiScaler menu in Final Fantasy XVI showing XeFG running at 3x on a Radeon RX 7600 XT" width="900">
+  <br>
+  <em>Final Fantasy XVI under Proton on an RX 7600 XT: XeMFG with Dynamic MFG, set up through OptiScaler.</em>
+</p>
+
 ## What it does
 
 - Finds your Steam and Faugus Launcher games and tells you which ones can use XeMFG.
