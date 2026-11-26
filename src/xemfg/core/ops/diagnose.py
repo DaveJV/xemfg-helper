@@ -78,7 +78,7 @@ def diagnose(ctx: Context, game: Game) -> Diagnosis:
             d.add("broken", f"launch options lack WINEDLLOVERRIDES {dll}=n,b: Wine loads its own {proxy}, "
                             "OptiScaler never runs", f"xemfg repair {q}" if st else f"xemfg launch-opts {q}")
         for v in lo.forbidden_vars(launch):
-            d.add("broken", f"{v} is set: proton-cachyos's built-in OptiScaler 0.9.x replaces the files each launch",
+            d.add("broken", f"{v} is set: Proton's built-in OptiScaler replaces xemfg's files on every launch",
                   f"xemfg repair {q}" if st else f"remove {v} from the launch options")
     if game.source.value == "steam" and not game.runner:
         d.add("broken", "no Proton compatibility tool set in Steam", "Steam > Properties > Compatibility: proton-cachyos")

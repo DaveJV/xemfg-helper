@@ -111,7 +111,7 @@ def check_entry(ctx: Context, e: Entry) -> Health:
                     h.add("drifted", f"{var} was added by an older xemfg and is no longer needed",
                           f"xemfg repair {_q(e)}")
             for var in lo.forbidden_vars(cur):
-                h.add("drifted", f"{var} is set: proton's built-in OptiScaler (0.9.x) undoes the install",
+                h.add("drifted", f"{var} is set: Proton's built-in OptiScaler replaces xemfg's files on every launch",
                       f"xemfg repair {_q(e)}")
         if e.runner and game.runner and game.runner != e.runner:
             h.add("info", f"runner changed: {e.runner} -> {game.runner}")
