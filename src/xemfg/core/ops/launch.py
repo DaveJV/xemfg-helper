@@ -8,12 +8,11 @@ from ..context import Context
 from ..launchers import steam_writer
 from ..models import Game
 from ..platform import dll_override_name
-from ..state import GameState
 from .common import OpError
 
 
 def show(ctx: Context, game: Game) -> tuple[list[str], str]:
-    st = GameState.load(game.exe.parent) if game.exe else None
+    st = ctx.state(game.exe.parent) if game.exe else None
     if st:
         opts = Options.from_dict(st.options)
     else:

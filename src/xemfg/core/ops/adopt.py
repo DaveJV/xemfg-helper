@@ -32,7 +32,7 @@ def _choice(d: str) -> str:
 
 def build_adopt(ctx: Context, game: Game) -> Plan:
     exe_dir = game.exe.parent
-    if GameState.load(exe_dir):
+    if ctx.state(exe_dir):
         raise OpError(f"{game.title} is already managed by xemfg")
     u = inspect_unmanaged(ctx, game)
     if u is None:
@@ -82,6 +82,9 @@ def build_adopt(ctx: Context, game: Game) -> Plan:
 
     st = GameState(game_key=game.key, title=game.title, set=sid, options=opts.to_dict(), files=files, ini=ist,
                    launch=ls, adopted=True, history=[{"set": sid, "at": now(), "action": "adopt"}])
+    from .apply import _record_components
+
+    _record_components(ctx, st, None, sid, opts)
     plan = Plan(f"adopt the existing setup in {game.title} as set {sid}", base=exe_dir)
     plan.notes.append(f"OptiScaler {u.optiscaler_version} as {u.proxy}, MFG Unlocker {xs.mfgu_version}, "
                       f"FSR4 {u.fsr4 or 'stock'} -> options: input {fg_input}, fsr4 {fsr4}, target {dmfg}")

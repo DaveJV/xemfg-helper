@@ -98,7 +98,7 @@ def check_tier(ctx: Context, game: Game, req: Request) -> list[str]:
 
 def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prepared:
     exe_dir = require_exe(game)
-    state = GameState.load(exe_dir)
+    state = ctx.state(exe_dir)
     backend = get_backend(state.backend if state else "xemfg")
     if req.mode == "install":
         warnings = check_tier(ctx, game, req)
@@ -194,6 +194,7 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
         files[UPSCALER_DLL] = ManagedFile("kept", sha256_or_none(up_path) or "", None, sha256_or_none(up_path), "fsr4")
 
     new_state.files = files
+    _record_components(ctx, new_state, state, set_id, opts)
 
     # ---- OptiScaler.ini
     _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, backup_dir,
@@ -203,7 +204,9 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
     _plan_launch(ctx, plan, game, state, new_state, opts, backend)
 
     # ---- state + registry, after the files
-    new_state.history = (state.history if state else []) + [{"set": set_id, "at": now(), "action": req.mode}]
+    new_state.history = (state.history if state else []) + [
+        {"set": set_id, "at": now(), "action": req.mode,
+         "components": {k: v.get("version") for k, v in new_state.components.items()}}]
 
     def commit():
         new_state.save(exe_dir)
@@ -215,6 +218,23 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
 
 class _NotCached(Exception):
     pass
+
+
+def _record_components(ctx: Context, new_state: GameState, state: GameState | None, set_id: str,
+                       opts: Options) -> None:
+    """Schema 2: each component's version, what the FSR4 slot holds, and the GPU it was chosen for."""
+    from ..migrate import file_components, fsr4_component
+
+    comps = file_components(ctx.manifest, set_id)
+    slot = new_state.files.get(UPSCALER_DLL)
+    comps["fsr4"] = fsr4_component(ctx.manifest, set_id, opts.to_dict(), slot.action if slot else None,
+                                   slot.sha256 if slot else None)
+    for k, c in comps.items():  # pins stay
+        c["pinned"] = bool(state and state.pinned(k))
+    new_state.components = comps
+    g = ctx.gpu_selection().gpu
+    if g is not None:
+        new_state.gpu = {"profile": g.profile.key, "slot": g.slot, "chip": g.chip, "override": bool(g.override)}
 
 
 def _note_fsr4(ctx: Context, game: Game, plan: Plan) -> None:
@@ -430,7 +450,7 @@ def _register(ctx: Context, game: Game, st: GameState) -> None:
         files={k: v.sha256 for k, v in st.files.items()}, appid=game.appid, gameid=game.gameid,
         runner=game.runner, launch_target=game.launch_target, status="installed",
         previous_sets=previous_sets, installed_at=prev.installed_at if prev and prev.status == "installed" else st.installed_at,
-        updated_at=now(), adopted=st.adopted,
+        updated_at=now(), adopted=st.adopted, components=st.components,
     )
     reg.entries[game.key] = e
     reg.save()

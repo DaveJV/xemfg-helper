@@ -5,7 +5,6 @@ from dataclasses import dataclass
 
 from ..context import Context
 from ..models import Game, Tier
-from ..state import GameState
 from . import apply
 from .common import OpError
 from .run import run_plan
@@ -31,7 +30,7 @@ def compatible_games(ctx: Context, tiers=(Tier.NATIVE_FG,)) -> list[Game]:
         if g.exe is None:
             continue
         r = ctx.compat(g)
-        if r.tier in tiers and GameState.load(g.exe.parent) is None:
+        if r.tier in tiers and ctx.state(g.exe.parent) is None:
             out.append(g)
     return out
 
@@ -65,7 +64,7 @@ def install_batch(ctx: Context, games: list[Game], req: apply.Request, dry_run=F
 
 
 def update(ctx: Context, game: Game, set_id: str | None = None, dry_run=False, yes=False) -> Result:
-    st = GameState.load(game.exe.parent) if game.exe else None
+    st = ctx.state(game.exe.parent) if game.exe else None
     if st is None:
         raise OpError(f"{game.title}: not installed by xemfg")
     target = set_id or ctx.manifest.current
@@ -77,7 +76,7 @@ def update(ctx: Context, game: Game, set_id: str | None = None, dry_run=False, y
 
 
 def rollback(ctx: Context, game: Game, to: str | None = None, dry_run=False, yes=False) -> Result:
-    st = GameState.load(game.exe.parent) if game.exe else None
+    st = ctx.state(game.exe.parent) if game.exe else None
     if st is None:
         raise OpError(f"{game.title}: not installed by xemfg")
     prev = st.previous_sets
@@ -92,7 +91,7 @@ def rollback(ctx: Context, game: Game, to: str | None = None, dry_run=False, yes
 
 
 def repair(ctx: Context, game: Game, reset_ini=False, clean=False, dry_run=False, yes=False) -> Result:
-    st = GameState.load(game.exe.parent) if game.exe else None
+    st = ctx.state(game.exe.parent) if game.exe else None
     if st is None:
         raise OpError(f"{game.title}: not installed by xemfg")
     if clean:

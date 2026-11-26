@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .fsutil import read_json, write_json
+from .fsutil import atomic_write_bytes, read_json, write_json
 from .state import now
 
 
@@ -32,6 +32,7 @@ class Entry:
     updated_at: str = field(default_factory=now)
     removed_at: str | None = None
     adopted: bool = False
+    components: dict[str, dict] = field(default_factory=dict)  # as in the game's state.json (schema 2)
 
     @property
     def exe_dir_path(self) -> Path:
@@ -51,7 +52,12 @@ class Registry:
         return cls(path, entries, d.get("steam_queue", {}))
 
     def save(self) -> None:
-        write_json(self.path, {"schema": 1, "installs": {k: asdict(v) for k, v in self.entries.items()},
+        """Write the registry. The first schema 2 write keeps the schema 1 file as registry.v1.json."""
+        old = read_json(self.path, None)
+        bk = self.path.with_name("registry.v1.json")
+        if old and old.get("schema", 1) < 2 and not bk.exists():
+            atomic_write_bytes(bk, self.path.read_bytes())  # byte-for-byte copy
+        write_json(self.path, {"schema": 2, "installs": {k: asdict(v) for k, v in self.entries.items()},
                                "steam_queue": self.steam_queue})
 
     def active(self) -> list[Entry]:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..context import Context
 from ..plan import Plan
-from ..state import STATE_DIR, GameState
+from ..state import STATE_DIR
 
 
 @dataclass
@@ -51,7 +51,7 @@ def build_gc(ctx: Context) -> GcResult:
     # backups xemfg made that the state no longer points to (left after successful updates)
     for e in ctx.registry.active():
         exe_dir = Path(e.exe_dir)
-        st = GameState.load(exe_dir)
+        st = ctx.state(exe_dir)
         bdir = exe_dir / STATE_DIR / "backups"
         if not st or not bdir.is_dir():
             continue

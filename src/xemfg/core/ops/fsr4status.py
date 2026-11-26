@@ -8,7 +8,6 @@ from .. import fsr4
 from ..context import Context
 from ..gpu import MODEL_LABEL, Gpu, override_warning
 from ..models import Game
-from ..state import GameState
 
 # cyboman name suffix -> archive family
 CYBOMAN_FAMILY = [(r"-igpu-r3-", "igpu-rdna3"), (r"-igpu-r2-", "igpu-rdna2"), (r"-r3-", "rx7000"), (r"-r2-", "rx6000")]
@@ -113,7 +112,7 @@ def report(ctx: Context, game: Game) -> Fsr4Report:
     rep = Fsr4Report(game, g, note, dlls)
     if g and (w := override_warning(g)):
         rep.warnings.append(w)
-    installed = GameState.load(exe_dir) is not None or bool(ctx.compat(game).optiscaler_proxy)
+    installed = ctx.state(exe_dir) is not None or bool(ctx.compat(game).optiscaler_proxy)
     prefix = prefix_of(game)
     for api in apis_for(ctx, game):
         rt = fsr4.runtime_dll(exe_dir, api, dlls, prefix, optiscaler_installed=installed)

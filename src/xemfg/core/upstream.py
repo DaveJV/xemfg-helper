@@ -212,20 +212,22 @@ class Upstream:
 
 
 def merge_into(manifest: Manifest, new: XSet) -> tuple[str, bool]:
-    """Add `new` to the manifest under a unique id. Returns (set id, changed)."""
+    """Add `new` to the manifest under a unique pairing id. Returns (pairing id, changed)."""
     for sid, s in manifest.sets.items():
         if s.same_content(new):
             changed = manifest.current != sid
             manifest.current = sid
+            manifest.set_latest_from(sid)
             return sid, changed
     sid = new.id
-    if sid in manifest.sets:  # same MFG Unlocker, different cyboman/nightly
+    if sid in manifest.pairings:  # same MFG Unlocker, different cyboman/nightly
         sid = f"{new.mfgu_version}+{new.cyboman_tag}"
         n = 2
-        while sid in manifest.sets:
+        while sid in manifest.pairings:
             sid = f"{new.mfgu_version}+{new.cyboman_tag}.{n}"
             n += 1
     new.id = sid
-    manifest.sets[sid] = new
+    manifest.add_set(new, source=f"{MFGU_REPO} {new.mfgu_version} docs/optiscaler.md (Which OptiScaler build)")
     manifest.current = sid
+    manifest.set_latest_from(sid)
     return sid, True

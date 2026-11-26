@@ -71,11 +71,29 @@ def make_set(sid: str, created: str, routes: dict) -> XSet:
     return xs
 
 
+class _TestManifest(Manifest):
+    """The real manifest, whose set views also carry the raw test file contents (`.raw`)."""
+
+    raws: dict = {}
+
+    def __post_init__(self):
+        self.raws = {}
+
+    def get(self, sid):
+        xs = super().get(sid)
+        xs.raw = self.raws.get(sid)  # type: ignore[attr-defined]
+        return xs
+
+
 def setup_sets(world, current: str = "t1") -> tuple[Manifest, FakeFetcher]:
     routes: dict = {}
     t1 = make_set("t1", "2026-11-01", routes)
     t2 = make_set("t2", "2026-11-20", routes)
-    m = Manifest(current, {"t1": t1, "t2": t2})
+    m = _TestManifest(current)
+    for xs in (t1, t2):
+        m.add_set(xs)
+        m.raws[xs.id] = xs.raw  # type: ignore[attr-defined]
+    m.set_latest_from(current)
     m.save(world.paths.manifest_file)
     return m, FakeFetcher(routes)
 

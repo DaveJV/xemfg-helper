@@ -265,13 +265,15 @@ def list_(all_: bool = typer.Option(False, "--all", help="include uninstalled en
         con.print("no installs registered (xemfg install <game>, or xemfg adopt <game> for a manual setup)")
         return
     t = Table(box=None)
-    for c in ("game", "health", "set", "proxy", "input", "launcher", "issue"):
-        t.add_column(c, overflow="fold")
+    from .core.migrate import describe_fsr4
+
+    for c in ("game", "health", "set", "fsr4 dll", "proxy", "input", "launcher", "issue"):
+        t.add_column(c, overflow="fold", no_wrap=c == "game")
     for h in hs:
         e = h.entry
         first = next((f.message for f in h.findings if f.level != "info"), "")
-        t.add_row(h.title, f"[{HEALTH_STYLE[h.status]}]{h.status}[/]", e.set, e.options.get("proxy", ""),
-                  e.options.get("fg_input", ""), e.launch_target or "-", first)
+        t.add_row(h.title, f"[{HEALTH_STYLE[h.status]}]{h.status}[/]", e.set, describe_fsr4(e.components.get("fsr4"), short=True),
+                  e.options.get("proxy", ""), e.options.get("fg_input", ""), e.launch_target or "-", first)
     con.print(t)
 
 
@@ -282,7 +284,6 @@ def status(game: Optional[str] = typer.Argument(None)):
     from .core.fsutil import sha256_or_none
     from .core.ops.apply import current_launch_text
     from .core.ops.health import check_entry, inspect_unmanaged
-    from .core.state import GameState
 
     ctx = ctx_for()
     g = ctx.resolve(game)
@@ -297,7 +298,7 @@ def status(game: Optional[str] = typer.Argument(None)):
     con.print(f"  launch    {launch!r}" if launch is not None else "  launch    (no launcher entry)")
     if g.exe:
         _print_fsr4(ctx, g)
-    st = GameState.load(g.exe.parent) if g.exe else None
+    st = ctx.state(g.exe.parent) if g.exe else None
     e = ctx.registry.get(g.key)
     if st is None:
         u = inspect_unmanaged(ctx, g) if g.exe else None
@@ -319,6 +320,10 @@ def status(game: Optional[str] = typer.Argument(None)):
     xs = ctx.manifest.get(st.set)
     con.print(f"  set       {st.set} (MFG Unlocker {xs.mfgu_version}, {xs.optiscaler.repo}@{xs.optiscaler.tag}, "
               f"{xs.nightly.tag}, cyboman {xs.cyboman_tag}){'  [adopted]' if st.adopted else ''}")
+    from .core.migrate import describe_components
+
+    for i, line in enumerate(describe_components(st.components)):
+        con.print(f"  {'components' if i == 0 else '':9} {line}")
     con.print(f"  options   " + ", ".join(f"{k}={v}" for k, v in st.options.items()))
     if st.previous_sets:
         con.print(f"  previous  {', '.join(st.previous_sets)}")

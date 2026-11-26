@@ -109,8 +109,17 @@ class Context:
     @property
     def registry(self) -> Registry:
         if self._registry is None:
-            self._registry = Registry.load(self.paths.registry_file)
+            from .migrate import upgrade_registry
+
+            self._registry = upgrade_registry(Registry.load(self.paths.registry_file), self.manifest)
         return self._registry
+
+    def state(self, exe_dir: Path):
+        """A game's .xemfg/state.json, upgraded to the current schema in memory (written on the next change)."""
+        from .migrate import upgrade_state
+        from .state import GameState
+
+        return upgrade_state(GameState.load(exe_dir), self.manifest)
 
     def library(self, refresh: bool = False, snapshot: bool = False) -> library_mod.Library:
         if self._library is None or refresh:

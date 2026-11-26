@@ -49,11 +49,17 @@ def check_entry(ctx: Context, e: Entry) -> Health:
     if not exe_dir.is_dir():
         h.add("missing", f"game folder is gone: {exe_dir}", "xemfg prune (finds moved games)")
         return h
-    st = GameState.load(exe_dir)
+    st = ctx.state(exe_dir)
     h.state = st
     if st is None:
         h.add("broken", "state file .xemfg/state.json is missing", "xemfg repair --clean")
         return h
+    if st.schema < 2:
+        if st.components:
+            h.add("info", "state.json uses the old format; it is upgraded on the next change "
+                          "(the old file is kept as .xemfg/state.v1.json)")
+        else:
+            h.add("info", f"set {st.set} is not in the manifest, so xemfg cannot tell the component versions")
     game = ctx.library().by_key(e.key)
     h.game = game
     osh = ctx.manifest.optiscaler_hashes()

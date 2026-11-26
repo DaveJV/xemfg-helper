@@ -1,6 +1,7 @@
 """The manifest: versions, URLs and SHA-256s of every XeMFG set (TOML data, not code)."""
 from __future__ import annotations
 
+import copy
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ class FileSpec:
     verified_by: str = "pinned"
     cache_name: str | None = None
     inner_sha256: dict[str, str] = field(default_factory=dict)
+    created: str = ""
 
     @property
     def url(self) -> str:
@@ -131,53 +133,197 @@ class XSet:
 
 
 @dataclass
+class CybomanRelease:
+    tag: str
+    repo: str
+    families: dict[str, CybomanFamily]
+    created: str = ""
+    verified_by: str = "sha256sums"
+
+    def to_dict(self) -> dict:
+        return {"repo": self.repo, "tag": self.tag, "created": self.created, "verified_by": self.verified_by,
+                "families": {n: {"archives": [{"asset": a, "sha256": h} for a, h in f.archives],
+                                 "dlls": dict(f.dlls)} for n, f in self.families.items()}}
+
+    @classmethod
+    def from_dict(cls, tag: str, d: dict) -> "CybomanRelease":
+        fams = {n: CybomanFamily(n, [(a["asset"], a["sha256"]) for a in f["archives"]], dict(f["dlls"]))
+                for n, f in d.get("families", {}).items()}
+        return cls(d.get("tag", tag), d.get("repo", ""), fams, d.get("created", ""), d.get("verified_by", "sha256sums"))
+
+
+# components that come from a release file; cyboman is a release of per-GPU archives
+FILE_COMPONENTS = ("nightly", "optiscaler", "mfgu")
+COMPONENTS = (*FILE_COMPONENTS, "cyboman")
+
+
+@dataclass
+class Pairing:
+    """A combination upstream documents as working together (MFG Unlocker's docs/optiscaler.md)."""
+
+    id: str
+    mfgu: str
+    optiscaler: str
+    nightly: str
+    cyboman: str = ""  # the cyboman release that was current when the pairing was resolved
+    created: str = ""
+    notes: str = ""
+    source: str = ""
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in vars(self).items() if k != "id"}
+
+
+@dataclass
 class Manifest:
-    current: str
-    sets: dict[str, XSet]
+    """Schema 2: components (each with its versions) + the pairings upstream documents.
+
+    `sets` is a read-only view: one XSet per pairing, for the code that installs a whole pairing.
+    """
+
+    current: str  # pairing id
+    components: dict[str, dict[str, FileSpec | CybomanRelease]] = field(default_factory=dict)
+    pairings: dict[str, Pairing] = field(default_factory=dict)
+    latest: dict[str, str] = field(default_factory=dict)  # component -> newest known version
     source: Path | None = None
+
+    # ------------------------------------------------------------ views
+    @property
+    def sets(self) -> dict[str, XSet]:
+        return {pid: self._view(p) for pid, p in self.pairings.items()}
+
+    def _view(self, p: Pairing) -> XSet:
+        # copies: a view must never change the manifest behind it
+        files = {k: copy.deepcopy(self.component(k, getattr(p, k))) for k in FILE_COMPONENTS}
+        cy = self.components.get("cyboman", {}).get(p.cyboman)
+        return XSet(p.id, p.mfgu, p.created, files, cy.repo if cy else "", cy.tag if cy else "",
+                    copy.deepcopy(cy.families) if cy else {}, p.notes)
+
+    def component(self, kind: str, version: str) -> FileSpec | CybomanRelease:
+        try:
+            return self.components[kind][version]
+        except KeyError:
+            raise ManifestError(f"unknown {kind} version '{version}' "
+                                f"(known: {', '.join(self.components.get(kind, {})) or 'none'})") from None
+
+    def versions(self, kind: str) -> list[str]:
+        """Known versions of a component, oldest first."""
+        vs = self.components.get(kind, {})
+        return sorted(vs, key=lambda v: (getattr(vs[v], "created", ""), v))
+
+    def pairing_for(self, versions: dict[str, str]) -> str | None:
+        """The pairing these nightly/optiscaler/mfgu versions match, if any."""
+        for pid, p in self.pairings.items():
+            if all(versions.get(k) == getattr(p, k) for k in FILE_COMPONENTS):
+                return pid
+        return None
 
     @property
     def current_set(self) -> XSet:
         return self.get(self.current)
 
     def get(self, sid: str) -> XSet:
-        if sid not in self.sets:
-            raise ManifestError(f"unknown set '{sid}' (known: {', '.join(self.sets)})")
-        return self.sets[sid]
+        if sid not in self.pairings:
+            raise ManifestError(f"unknown set '{sid}' (known: {', '.join(self.pairings)})")
+        return self._view(self.pairings[sid])
 
     def optiscaler_hashes(self) -> set[str]:
-        return {s.optiscaler.sha256 for s in self.sets.values()}
+        return {f.sha256 for f in self.components.get("optiscaler", {}).values()}
 
     def optiscaler_set_by_hash(self) -> dict[str, str]:
         return {s.optiscaler.sha256: sid for sid, s in self.sets.items()}
 
     def cyboman_by_hash(self) -> dict[str, str]:
         out = {}
-        for s in self.sets.values():
-            for fam in s.families.values():
+        for tag in reversed(self.versions("cyboman")):  # newest wins a tie
+            rel = self.components["cyboman"][tag]
+            for fam in rel.families.values():
                 for d, h in fam.dlls.items():
-                    out.setdefault(h, f"{d} ({fam.name}, {s.cyboman_tag})")
+                    out.setdefault(h, f"{d} ({fam.name}, {rel.tag})")
         return out
 
     def ordered_ids(self) -> list[str]:
-        return sorted(self.sets, key=lambda k: (self.sets[k].created, k))
+        return sorted(self.pairings, key=lambda k: (self.pairings[k].created, k))
 
+    # ------------------------------------------------------------ building
+    def add_set(self, xs: XSet, source: str = "") -> None:
+        """Split a resolved set into its components and a pairing with the set's id."""
+        comps = self.components
+        versions = {}
+        for k in FILE_COMPONENTS:
+            f = xs.files[k]
+            v = f.tag
+            have = comps.get(k, {}).get(v)
+            if have is not None and have.sha256 != f.sha256:  # same tag, new file upstream
+                v = f"{f.tag}+{f.sha256[:8]}"
+            spec = FileSpec(**{**vars(f), "key": k})
+            spec.created = getattr(have, "created", "") or xs.created
+            comps.setdefault(k, {}).setdefault(v, spec)
+            versions[k] = v
+        if xs.cyboman_tag:
+            comps.setdefault("cyboman", {}).setdefault(
+                xs.cyboman_tag, CybomanRelease(xs.cyboman_tag, xs.cyboman_repo, xs.families, xs.created))
+        self.pairings[xs.id] = Pairing(xs.id, xs.mfgu_version, versions["optiscaler"], versions["nightly"],
+                                       xs.cyboman_tag, xs.created, xs.notes, source)
+
+    def set_latest_from(self, pid: str) -> None:
+        p = self.pairings[pid]
+        self.latest.update({k: getattr(p, k) for k in COMPONENTS if getattr(p, k)})
+
+    # ------------------------------------------------------------ (de)serialising
     @classmethod
     def parse(cls, text: str, source: Path | None = None) -> "Manifest":
         d = tomllib.loads(text)
-        if d.get("schema") != 1:
-            raise ManifestError("unsupported manifest schema")
-        sets = {sid: XSet.from_dict(sid, sd) for sid, sd in d.get("sets", {}).items()}
-        if d["current"] not in sets:
-            raise ManifestError(f"current set {d['current']} is not defined")
-        return cls(d["current"], sets, source)
+        schema = d.get("schema")
+        if schema == 1:
+            return cls._from_v1(d, source)
+        if schema != 2:
+            raise ManifestError(f"unsupported manifest schema {schema}")
+        m = cls(d["current"], source=source)
+        for k, vs in d.get("components", {}).items():
+            for v, spec in vs.items():
+                if k == "cyboman":
+                    m.components.setdefault(k, {})[v] = CybomanRelease.from_dict(v, spec)
+                elif k in FILE_COMPONENTS:
+                    m.components.setdefault(k, {})[v] = FileSpec(key=k, **spec)
+        for pid, p in d.get("pairings", {}).items():
+            m.pairings[pid] = Pairing(pid, **p)
+        m.latest = dict(d.get("latest", {}))
+        if m.current not in m.pairings:
+            raise ManifestError(f"current set {m.current} is not defined")
+        for p in m.pairings.values():  # every pairing must resolve
+            m._view(p)
+        return m
+
+    @classmethod
+    def _from_v1(cls, d: dict, source: Path | None) -> "Manifest":
+        m = cls(d["current"], source=source)
+        for sid, sd in d.get("sets", {}).items():
+            m.add_set(XSet.from_dict(sid, sd), source="manifest schema 1")
+        if m.current not in m.pairings:
+            raise ManifestError(f"current set {m.current} is not defined")
+        m.set_latest_from(m.current)
+        return m
+
+    def to_dict(self) -> dict:
+        return {"schema": 2, "current": self.current, "latest": dict(self.latest),
+                "pairings": {pid: p.to_dict() for pid, p in self.pairings.items()},
+                "components": {k: {v: c.to_dict() | ({"created": c.created} if isinstance(c, FileSpec) else {})
+                                   for v, c in vs.items()} for k, vs in self.components.items()}}
 
     def dumps(self) -> str:
-        return tomli_w.dumps({"schema": 1, "current": self.current,
-                              "sets": {k: v.to_dict() for k, v in self.sets.items()}})
+        return tomli_w.dumps(self.to_dict())
 
     def save(self, path: Path) -> None:
-        header = ("# xemfg manifest (written by `xemfg manifest refresh`). Data only.\n")
+        header = "# xemfg manifest (written by `xemfg manifest refresh`). Data only.\n"
+        if path.is_file():  # keep the first copy of an older format
+            try:
+                if tomllib.loads(path.read_text()).get("schema") == 1:
+                    bk = path.with_name(path.stem + ".v1.toml")
+                    if not bk.exists():
+                        atomic_write_bytes(bk, path.read_bytes())
+            except (OSError, tomllib.TOMLDecodeError):
+                pass
         atomic_write_bytes(path, (header + self.dumps()).encode())
         self.source = path
 
@@ -187,11 +333,16 @@ def bundled_text() -> str:
 
 
 def load(user_path: Path) -> Manifest:
-    """User copy if present (it accumulates refreshed sets), merged with the bundled sets."""
+    """User copy if present (it accumulates refreshed versions), merged with the bundled data."""
     bundled = Manifest.parse(bundled_text())
     if not user_path.exists():
         return bundled
     user = Manifest.parse(user_path.read_text(), user_path)
-    for sid, s in bundled.sets.items():
-        user.sets.setdefault(sid, s)
+    for k, vs in bundled.components.items():
+        for v, c in vs.items():
+            user.components.setdefault(k, {}).setdefault(v, c)
+    for pid, p in bundled.pairings.items():
+        user.pairings.setdefault(pid, p)
+    for k, v in bundled.latest.items():
+        user.latest.setdefault(k, v)
     return user

@@ -7,7 +7,6 @@ from pathlib import Path
 from ..context import Context
 from ..fsutil import sha256_or_none
 from ..registry import Entry
-from ..state import GameState
 
 
 @dataclass
@@ -56,7 +55,7 @@ def repoint(ctx: Context, item: PruneItem) -> None:
         e.key = g.key
         e.appid, e.gameid, e.source, e.title = g.appid, g.gameid, g.source.value, g.title
         ctx.registry.entries[e.key] = e
-    st = GameState.load(new.parent)
+    st = ctx.state(new.parent)
     if st and st.game_key != e.key:
         st.game_key = e.key
         st.save(new.parent)

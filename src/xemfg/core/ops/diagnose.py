@@ -62,7 +62,7 @@ def extract_stack(text: str, limit: int = 25) -> list[str]:
 
 def diagnose(ctx: Context, game: Game) -> Diagnosis:
     exe_dir = game.exe.parent
-    st = GameState.load(exe_dir)
+    st = ctx.state(exe_dir)
     q = game.appid or game.gameid or game.title
     log = latest_log(exe_dir)
     d = Diagnosis(game, log)

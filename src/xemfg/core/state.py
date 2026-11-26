@@ -5,7 +5,7 @@ import datetime as dt
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .fsutil import read_json, write_json
+from .fsutil import atomic_write_bytes, read_json, write_json
 
 STATE_DIR = ".xemfg"
 
@@ -57,9 +57,13 @@ class GameState:
     backend: str = "xemfg"
     installed_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)
-    history: list[dict] = field(default_factory=list)  # [{set, at, action}]
+    history: list[dict] = field(default_factory=list)  # [{set, at, action, components}]
     adopted: bool = False
-    schema: int = 1
+    schema: int = 1  # 1: one "set" for everything; 2: per-component versions (see `components`)
+    # schema 2: component -> {"version", "pinned"}; "fsr4" also has kind (official | cyboman | nightly | kept),
+    # variant, family and sha256 of the DLL in OptiScaler's slot
+    components: dict[str, dict] = field(default_factory=dict)
+    gpu: dict = field(default_factory=dict)  # the GPU the FSR4 choice was made for
 
     @staticmethod
     def path(exe_dir: Path) -> Path:
@@ -76,7 +80,18 @@ class GameState:
         return cls(**d)
 
     def save(self, exe_dir: Path) -> None:
-        write_json(self.path(exe_dir), asdict(self))
+        """Write the state. The first write in schema 2 keeps the schema 1 file as state.v1.json."""
+        path = self.path(exe_dir)
+        if self.components:
+            self.schema = 2
+            old = read_json(path, None)
+            bk = path.with_name("state.v1.json")
+            if old and old.get("schema", 1) < 2 and not bk.exists():
+                atomic_write_bytes(bk, path.read_bytes())  # byte-for-byte copy
+        write_json(path, asdict(self))
+
+    def pinned(self, component: str) -> bool:
+        return bool(self.components.get(component, {}).get("pinned"))
 
     def to_dict(self) -> dict:
         return asdict(self)

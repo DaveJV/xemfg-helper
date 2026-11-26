@@ -15,7 +15,7 @@ INI = "OptiScaler.ini"
 
 def build_uninstall(ctx: Context, game: Game, mark_registry: bool = True) -> Plan:
     exe_dir = game.exe.parent
-    st = GameState.load(exe_dir)
+    st = ctx.state(exe_dir)
     if st is None:
         raise OpError(f"{game.title}: not installed by xemfg (no {STATE_DIR}/state.json)")
     plan = Plan(f"uninstall XeMFG from {game.title}", base=exe_dir)
