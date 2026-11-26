@@ -202,6 +202,13 @@ def analyze(game: Game, optiscaler_hashes: set[str] | None = None,
         r.tier, r.reasons = Tier.UNKNOWN, ["could not tell the graphics API and no upscaler found"]
     else:
         r.tier, r.reasons = Tier.INCOMPATIBLE, ["nothing to hook (no DLSS/XeSS/FSR upscaler or FSR FG)"]
+    if r.fg_input is None:  # what install would use if forced (e.g. anti-cheat override)
+        if "fsrfg" in r.inputs:
+            r.fg_input = "FSRFG"
+        elif "fsr30fg" in r.inputs:
+            r.fg_input = "FSRFG30"
+        elif any(i in r.inputs for i in ("dlss", "xess", "fsr31")):
+            r.fg_input = "Upscaler"
     if "vulkan" in r.graphics_api and "d3d12" not in r.graphics_api and r.installable:
         r.warnings.append("Vulkan game: XeFG works only with dashdogy's OptiScaler build")
 
