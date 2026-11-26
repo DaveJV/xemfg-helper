@@ -1,4 +1,6 @@
-# xemfg
+# xemfg-helper
+
+Provides the `xemfg` command.
 
 Installs and maintains **XeMFG** (Intel XeSS multi frame generation, unlocked beyond 2x on AMD
 and others by dashdogy's MFG Unlocker) through **OptiScaler**, for Windows games running under
@@ -44,8 +46,8 @@ xemfg                     # TUI
 Needs Python 3.11+, [uv](https://docs.astral.sh/uv/), and `bsdtar` (libarchive) or `7z` to unpack.
 
 ```
-git clone https://github.com/DaveJV/xemfg
-cd xemfg
+git clone https://github.com/DaveJV/xemfg-helper
+cd xemfg-helper
 uv tool install .
 ```
 

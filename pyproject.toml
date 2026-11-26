@@ -1,5 +1,5 @@
 [project]
-name = "xemfg"
+name = "xemfg-helper"
 version = "0.1.0"
 description = "Install and maintain XeMFG (MFG Unlocker + dashdogy OptiScaler) for Proton games on Linux"
 readme = "README.md"

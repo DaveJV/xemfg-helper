@@ -1,10 +1,10 @@
 # Maintainer: DaveJV
-pkgname=xemfg
+pkgname=xemfg-helper
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Install and maintain XeMFG (MFG Unlocker + dashdogy OptiScaler) for Proton games (Steam, Faugus Launcher)"
 arch=('any')
-url="https://github.com/DaveJV/xemfg"
+url="https://github.com/DaveJV/xemfg-helper"
 license=('MIT')
 depends=('python' 'python-typer' 'python-textual' 'python-pefile' 'python-rapidfuzz' 'python-httpx'
          'python-tomli-w' 'libarchive')
