@@ -96,7 +96,9 @@ file they write is xemfg's own scan snapshot in `~/.cache/xemfg/library.json`.
 
 An existing cyboman DLL is kept unless you pass `--fsr4`. The FSR4 archive is the `rx7000` one by
 default (`xemfg config set gpu_family rx6000|igpu-rdna3|igpu-rdna2`). With `--fsr4 none`, OptiScaler's
-stock DLL runs on FP8 + WMMA, and `DXIL_SPIRV_CONFIG=wmma_rdna3_workaround` is added to the launch options.
+own FSR4 DLL is used and OptiScaler picks the model for your GPU (`Fsr4GpuSupport=auto`, `Fsr4Model=auto`).
+xemfg adds no environment variables. `DXIL_SPIRV_CONFIG=wmma_rdna3_workaround`, which older versions added,
+is removed by `repair`, `update` or `uninstall` (only if xemfg added it).
 
 ### Files
 

@@ -272,6 +272,8 @@ def _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, bac
     ist = copy.deepcopy(state.ini) if state else IniState()
     if req.mode == "repair" and state and state.ini.keys:
         owned = copy.deepcopy(state.ini.keys)  # recorded values; other keys are the user's
+        if hasattr(backend, "legacy_ini_keys"):
+            owned = backend.legacy_ini_keys(owned, opts)
     else:
         owned = backend.owned_ini_keys(opts)
     ist.keys = owned
@@ -331,7 +333,8 @@ def _plan_launch(ctx: Context, plan: Plan, game: Game, state, new_state: GameSta
     dll = dll_override_name(opts.proxy)
     env = backend.launch_env(opts)
     old = state.launch if state else LaunchState()
-    remove_env = {k: None for k in old.env if k not in env}
+    # only what xemfg added itself; a variable that was there before the install is the user's
+    remove_env = {k: None for k in lo.xemfg_added_env(old.env, old.original) if k not in env}
     remove_env["PROTON_USE_OPTISCALER"] = None
     target = game.launch_target
     current = current_launch_text(ctx, game) if target else None

@@ -79,7 +79,7 @@ def _launch_removal(ctx: Context, plan: Plan, game: Game, st: GameState) -> None
     if not ls.target:
         return
     cur = current_launch_text(ctx, game) or ""
-    env = {k: None for k in ls.env}
+    env = {k: None for k in lo.xemfg_added_env(ls.env, ls.original)}
     apply_fn = lo.faugus_apply if ls.target == "faugus" else lo.steam_apply
     if ls.had_override:
         # the override was there before xemfg: leave it exactly as it is

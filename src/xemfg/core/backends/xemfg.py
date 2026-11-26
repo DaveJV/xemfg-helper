@@ -46,7 +46,8 @@ class XeMFGBackend:
             "Plugins": {"LoadAsiPlugins": "true"},
             "FrameGen": {"Enabled": "true", "FGInput": opts.fg_input, "FGOutput": "XeFG"},
             "XeFG": {"DynamicMFG": "true", "FramerateTargetDMFG": str(opts.dmfg_target)},
-            "FSR": {"UpscalerIndex": "0", "Fsr4GpuSupport": "2" if int8 else "1", "Fsr4Model": "1" if int8 else "auto"},
+            # cyboman DLLs replace the INT8 model; with OptiScaler's own DLL, OptiScaler picks the model for the GPU
+            "FSR": {"UpscalerIndex": "0", "Fsr4GpuSupport": "2" if int8 else "auto", "Fsr4Model": "1" if int8 else "auto"},
         }
 
     def fresh_install_ini_defaults(self, opts: Options) -> dict[str, dict[str, str]]:
@@ -57,7 +58,21 @@ class XeMFGBackend:
         return d
 
     def launch_env(self, opts: Options) -> dict[str, str]:
-        return {"DXIL_SPIRV_CONFIG": "wmma_rdna3_workaround"} if opts.fsr4 == "none" else {}
+        # No env vars. DXIL_SPIRV_CONFIG=wmma_rdna3_workaround is only needed for FP8 on RDNA3 (MLFG),
+        # which xemfg never selects.
+        return {}
+
+    def legacy_ini_keys(self, keys: dict[str, dict[str, str]], opts: Options) -> dict[str, dict[str, str]]:
+        """Recorded keys from older xemfg versions that must change with the current launch env.
+
+        xemfg used to force FP8 (Fsr4GpuSupport=1) on the stock DLL and add the WMMA workaround so RDNA3
+        could emulate it. Without the workaround that setting breaks, so it goes together with the env var.
+        """
+        fsr = keys.get("FSR", {})
+        if opts.fsr4 == "none" and fsr.get("Fsr4GpuSupport") == "1":
+            new = self.owned_ini_keys(opts)["FSR"]
+            keys = {**keys, "FSR": {**fsr, "Fsr4GpuSupport": new["Fsr4GpuSupport"], "Fsr4Model": new["Fsr4Model"]}}
+        return keys
 
     def default_fg_input(self, report: CompatReport) -> str | None:
         return report.fg_input

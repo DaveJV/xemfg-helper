@@ -52,9 +52,9 @@ def test_faugus_merge_keeps_existing():
     assert lo.faugus_apply(new, "dxgi", None) == text  # removal restores
     assert lo.faugus_apply("", "dxgi", "n,b") == 'WINEDLLOVERRIDES="dxgi=n,b"'
     assert lo.faugus_apply('WINEDLLOVERRIDES="dxgi=n,b"', "dxgi", None) == ""
-    env = lo.faugus_apply("A=1", "dxgi", "n,b", {"DXIL_SPIRV_CONFIG": "wmma_rdna3_workaround"})
-    assert env == 'A=1\nWINEDLLOVERRIDES="dxgi=n,b"\nDXIL_SPIRV_CONFIG=wmma_rdna3_workaround'
-    assert lo.faugus_apply(env, "dxgi", None, {"DXIL_SPIRV_CONFIG": None}) == "A=1"
+    env = lo.faugus_apply("A=1", "dxgi", "n,b", {"MY_VAR": "1"})
+    assert env == 'A=1\nWINEDLLOVERRIDES="dxgi=n,b"\nMY_VAR=1'
+    assert lo.faugus_apply(env, "dxgi", None, {"MY_VAR": None}) == "A=1"
 
 
 def test_steam_merge_cases():

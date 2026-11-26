@@ -142,9 +142,12 @@ def steam_apply(opts: str, dll: str, mode: str | None, env: dict[str, str | None
     return f"{pre} %command%{post}".rstrip()
 
 
-def wanted_env(fsr4: str) -> dict[str, str | None]:
-    """Env vars the xemfg backend needs (FSR4 'none' uses OptiScaler's stock DLL on FP8 + WMMA)."""
-    return {"DXIL_SPIRV_CONFIG": "wmma_rdna3_workaround"} if fsr4 == "none" else {}
+def xemfg_added_env(recorded: dict[str, str], original: str | None) -> list[str]:
+    """Env vars xemfg recorded as its own that were not already in the launch options before install.
+
+    Only these may be removed; a variable the user had set before stays theirs.
+    """
+    return [k for k in recorded if env_value(original or "", k) is None]
 
 
 def display_lines(dll: str, env: dict[str, str]) -> tuple[list[str], str]:

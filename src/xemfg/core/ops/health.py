@@ -100,6 +100,10 @@ def check_entry(ctx: Context, e: Entry) -> Health:
                           "close Steam, then xemfg launch-opts --apply-queued")
                 else:
                     h.add("drifted", f"launch option {st.launch.dll}=n,b is missing", f"xemfg repair {_q(e)}")
+            for var in lo.xemfg_added_env(st.launch.env, st.launch.original):
+                if lo.env_value(cur, var) is not None:
+                    h.add("drifted", f"{var} was added by an older xemfg and is no longer needed",
+                          f"xemfg repair {_q(e)}")
             for var in lo.forbidden_vars(cur):
                 h.add("drifted", f"{var} is set: proton's built-in OptiScaler (0.9.x) undoes the install",
                       f"xemfg repair {_q(e)}")
