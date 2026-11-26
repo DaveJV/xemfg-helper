@@ -1,13 +1,15 @@
 """Textual TUI: Library, Installed, Updates and Cleanup tabs. All logic comes from xemfg.core."""
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (Button, DataTable, Footer, Header, Input, Label, ProgressBar, RichLog, Static,
@@ -20,9 +22,26 @@ from ..core.ops.common import OpError
 from ..core.migrate import describe_fsr4
 from ..core.plan import Plan
 
-TIER_COLOR = {Tier.NATIVE_FG: "green", Tier.UPSCALER: "yellow", Tier.DLSSG_ONLY: "magenta",
-              Tier.UNKNOWN: "grey50", Tier.INCOMPATIBLE: "red"}
-HEALTH_COLOR = {"ok": "green", "outdated": "cyan", "drifted": "yellow", "broken": "red", "missing": "red"}
+THEME = "tokyo-night"
+# theme colour variable per tier / health / finding level (resolved with XemfgApp.color)
+TIER_COLOR = {Tier.NATIVE_FG: "success", Tier.UPSCALER: "warning", Tier.DLSSG_ONLY: "secondary",
+              Tier.UNKNOWN: "foreground-muted", Tier.INCOMPATIBLE: "error"}
+HEALTH_COLOR = {"ok": "success", "outdated": "secondary", "drifted": "warning", "broken": "error", "missing": "error"}
+LEVEL_COLOR = {"missing": "error", "broken": "error", "drifted": "warning", "outdated": "secondary"}
+
+
+def short_reason(r) -> str:
+    """A few words for the tier column of a game that cannot be selected."""
+    if r.tier != Tier.INCOMPATIBLE:
+        return r.tier.label
+    why = (r.reasons or [""])[0]
+    if why.startswith("anti-cheat"):
+        return "✗ anti-cheat"
+    if why.startswith("32-bit"):
+        return "✗ 32-bit exe"
+    if "no D3D12" in why:
+        return "✗ no DX12"
+    return "✗ nothing to hook"
 
 
 class TuiUI:
@@ -56,7 +75,7 @@ class TuiUI:
         self.app.post_log(message)
 
     def warn(self, message: str) -> None:
-        self.app.post_log(f"[yellow]{message}[/]")
+        self.app.post_log(f"[$warning]{message}[/]")
 
     def progress(self, label: str, done: int, total: int | None) -> None:
         if total:
@@ -130,39 +149,53 @@ class Row:
     status: str
 
 
+class FitTable(DataTable):
+    """A DataTable that asks the app to re-fit its columns whenever its own width changes
+    (including the first time a hidden tab is shown)."""
+
+    _fit_width = -1
+
+    def on_resize(self, event: events.Resize) -> None:
+        if event.size.width != self._fit_width:
+            self._fit_width = event.size.width
+            self.app.call_after_refresh(self.app.refit, self)
+
+
 # ------------------------------------------------------------------------------------- app
 class XemfgApp(App):
     TITLE = "xemfg"
     SUB_TITLE = "XeMFG for Proton games"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
-    #banner { padding: 0 1; background: $boost; height: auto; }
+    #banner { padding: 0 1; background: $panel; color: $foreground; height: auto; }
+    #banner.hidden { display: none; }
     TabbedContent { height: 1fr; }
     TabPane { height: 1fr; padding: 0; }
     ContentSwitcher { height: 1fr; }
-    #banner.hidden { display: none; }
-    .bar { height: auto; padding: 0 1; }
-    .bar Button { margin-right: 1; }
+    .bar { height: auto; max-height: 3; padding: 0 1; }
+    .bar > * { margin-right: 1; }
     .bar Input { width: 1fr; min-width: 16; }
-    DataTable { height: 1fr; }
-    #notes-box { height: auto; max-height: 6; border-top: solid $primary; padding: 0 1; }
-    #notes-box.hidden { display: none; }
-    #log { height: 5; border-top: solid $primary; }
-    #log.empty { display: none; }
-    #progress { width: 22; }
-    #dialog { width: 90%; height: 85%; border: thick $primary; background: $surface; padding: 1; }
-    #dialog-title { text-style: bold; }
-    #dialog-body { height: 1fr; border: round $primary-darken-2; }
+    .hidden { display: none; }
+    .panel { border: round $panel; border-title-color: $foreground-muted; background: $surface; }
+    .panel:focus, .panel:focus-within { border: round $primary; border-title-color: $primary; }
+    DataTable.panel { height: 1fr; scrollbar-gutter: stable; }
+    #details { height: auto; max-height: 12; padding: 0 1; }
+    #log { height: auto; max-height: 6; padding: 0 1; overflow-y: auto; }
+    #progress { width: 24; height: 1; }
+    #updates-box, #cleanup-box { height: 1fr; padding: 0 1; }
+    #dialog { width: 90%; height: 85%; border: round $primary; background: $surface; padding: 1; }
+    #dialog-title { text-style: bold; color: $primary; }
+    #dialog-body { height: 1fr; border: round $panel; }
     #dialog-buttons { height: auto; align-horizontal: right; }
     #dialog-buttons Button { margin-left: 1; }
     PlanScreen, PickScreen { align: center middle; }
-    #updates-text { padding: 1; }
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "rescan", "Rescan"),
         Binding("space", "toggle_select", "Select", show=True),
         Binding("i", "install_selected", "Install selected"),
+        Binding("h", "toggle_hidden", "Hide incompatible"),
     ]
 
     def __init__(self, ctx_factory=None):
@@ -173,6 +206,28 @@ class XemfgApp(App):
         self.selected: set[str] = set()
         self.health: dict = {}
         self.check_result = None
+        self.hide_incompatible = False
+        self.theme = THEME
+        self._colors: dict[str, str] = {}
+
+    # ---------------------------------------------------------------- theme colours
+    def color(self, name: str) -> str:
+        """A theme variable as #rrggbb (translucent ones blended over the background) for Rich styles."""
+        if name not in self._colors:
+            v = self.get_css_variables()
+            c = Color.parse(v[name])
+            if c.a < 1:
+                c = Color.parse(v["background"]) + c
+            self._colors[name] = c.hex6
+        return self._colors[name]
+
+    def themed(self, markup: str) -> str:
+        """Rich markup with $variables in tags ("[bold $error]...") resolved to theme colours."""
+        return re.sub(r"\[[^\[\]]*\$[^\[\]]*\]",
+                      lambda m: re.sub(r"\$([a-z][a-z0-9-]*)", lambda v: self.color(v.group(1)), m.group(0)), markup)
+
+    def styled(self, text: str, name: str, extra: str = "") -> Text:
+        return Text(text, style=f"{extra} {self.color(name)}".strip())
 
     # ---------------------------------------------------------------- layout
     def compose(self) -> ComposeResult:
@@ -181,45 +236,46 @@ class XemfgApp(App):
         with TabbedContent(id="tabs"):
             with TabPane("Library", id="library"):
                 with Horizontal(classes="bar"):
-                    yield Input(placeholder="filter (name, tier, source)", id="filter")
-                    yield Button("Install selected", id="install-selected", variant="primary")
-                    yield Button("Select all Native FG", id="select-native")
-                    yield Button("Dry run", id="dry-selected")
-                    yield ProgressBar(id="progress", show_eta=False)
-                yield DataTable(id="library-table", cursor_type="row", zebra_stripes=True)
+                    yield Input(placeholder="filter (name, tier, source)", id="filter", compact=True)
+                    yield Button("Install selected", id="install-selected", variant="primary", compact=True)
+                    yield Button("Select all Native FG", id="select-native", compact=True)
+                    yield Button("Dry run", id="dry-selected", compact=True)
+                    yield ProgressBar(id="progress", show_eta=False, classes="hidden")
+                yield FitTable(id="library-table", cursor_type="row", zebra_stripes=True, classes="panel")
             with TabPane("Installed", id="installed"):
                 with Horizontal(classes="bar"):
-                    yield Button("Repair", id="repair")
-                    yield Button("Diagnose", id="diagnose")
-                    yield Button("Status", id="status")
-                    yield Button("FSR4 DLL", id="fsr4-swap")
-                    yield Button("Uninstall", id="uninstall", variant="error")
-                yield DataTable(id="installed-table", cursor_type="row", zebra_stripes=True)
+                    yield Button("Repair", id="repair", compact=True)
+                    yield Button("Diagnose", id="diagnose", compact=True)
+                    yield Button("Status", id="status", compact=True)
+                    yield Button("FSR4 DLL", id="fsr4-swap", compact=True)
+                    yield Button("Uninstall", id="uninstall", variant="error", compact=True)
+                yield FitTable(id="installed-table", cursor_type="row", zebra_stripes=True, classes="panel")
             with TabPane("Updates", id="updates"):
                 with Horizontal(classes="bar"):
-                    yield Button("Check again", id="check")
-                    yield Button("Update all", id="update-all", variant="primary")
-                yield Static("checking upstream...", id="updates-text")
+                    yield Button("Check again", id="check", compact=True)
+                    yield Button("Update all", id="update-all", variant="primary", compact=True)
+                with VerticalScroll(id="updates-box", classes="panel"):
+                    yield Static("checking upstream...", id="updates-text")
             with TabPane("Cleanup", id="cleanup"):
                 with Horizontal(classes="bar"):
-                    yield Button("Doctor", id="doctor")
-                    yield Button("Prune", id="prune")
-                    yield Button("GC", id="gc")
-                yield Static("Doctor checks every install; Prune drops entries whose folders are gone "
-                             "(re-pointing moved games); GC frees unused cache sets and backups. "
-                             "Each shows its changes before doing anything.", id="cleanup-text")
-        with VerticalScroll(id="notes-box", classes="hidden"):
+                    yield Button("Doctor", id="doctor", compact=True)
+                    yield Button("Prune", id="prune", compact=True)
+                    yield Button("GC", id="gc", compact=True)
+                with VerticalScroll(id="cleanup-box", classes="panel"):
+                    yield Static("Doctor checks every install; Prune drops entries whose folders are gone "
+                                 "(re-pointing moved games); GC frees unused cache sets and backups. "
+                                 "Each shows its changes before doing anything.", id="cleanup-text")
+        with VerticalScroll(id="details", classes="panel hidden"):
             yield Static("", id="notes", markup=False)
-        yield RichLog(id="log", markup=True, wrap=True, classes="empty")
+        yield RichLog(id="log", markup=True, wrap=True, classes="panel hidden")
         yield Footer()
 
     def on_mount(self) -> None:
-        t = self.query_one("#library-table", DataTable)
-        for c in ("", "game", "source", "tier", "input", "status"):
-            t.add_column(c, key=c or "sel")
-        it = self.query_one("#installed-table", DataTable)
-        for c in ("game", "health", "set", "fsr4 dll", "proxy", "launcher"):
-            it.add_column(c, key=c)
+        self.query_one("#library-table", DataTable).border_title = "Games"
+        self.query_one("#installed-table", DataTable).border_title = "Installed"
+        self.query_one("#updates-box").border_title = "Versions"
+        self.query_one("#cleanup-box").border_title = "Cleanup"
+        self.query_one("#log", RichLog).border_title = "Log"
         self.query_one("#progress", ProgressBar).update(total=1, progress=0)
         self.ctx = self._ctx_factory(TuiUI(self)) if self._ctx_factory else Context.default(TuiUI(self))
         self.load_library()
@@ -229,8 +285,8 @@ class XemfgApp(App):
     def post_log(self, msg: str) -> None:
         def write():
             log = self.query_one("#log", RichLog)
-            log.remove_class("empty")  # hidden until the first message: no empty box
-            log.write(msg)
+            log.remove_class("hidden")  # hidden until the first message: no empty box
+            log.write(self.themed(msg))
 
         if threading.current_thread() is threading.main_thread():
             write()
@@ -239,7 +295,9 @@ class XemfgApp(App):
 
     def post_progress(self, done: int, total: int) -> None:
         def upd():
-            self.query_one("#progress", ProgressBar).update(total=total, progress=done)
+            bar = self.query_one("#progress", ProgressBar)
+            bar.update(total=total, progress=done)
+            bar.set_class(done >= total, "hidden")  # only while something is running
 
         if threading.current_thread() is threading.main_thread():
             upd()
@@ -269,22 +327,79 @@ class XemfgApp(App):
         self.refresh_installed_table()
         self.update_banner()
         for e in errors:
-            self.post_log(f"[yellow]{e}[/]")
+            self.post_log(f"[$warning]{e}[/]")
+
+    def _row_rank(self, row: Row) -> tuple:
+        installed = row.status.startswith(("xemfg", "OptiScaler", "installed"))
+        group = 0 if installed else 1 if self.ctx.compat(row.game).installable else 2
+        return group, row.tier.rank, row.game.title.lower()
 
     def refresh_library_table(self) -> None:
         t = self.query_one("#library-table", DataTable)
         flt = self.query_one("#filter", Input).value.strip().lower()
-        t.clear()
-        for key, row in sorted(self.rows.items(), key=lambda kv: (kv[1].tier.rank, kv[1].game.title.lower())):
+        rows = []
+        for key, row in sorted(self.rows.items(), key=lambda kv: self._row_rank(kv[1])):
             g, r = row.game, self.ctx.compat(row.game)
             hay = f"{g.title} {row.tier.label} {g.source.value} {row.status}".lower()
             if flt and flt not in hay:
                 continue
-            sel = "[✓]" if key in self.selected else "[ ]"
-            new = " [bold cyan]NEW[/]" if key in getattr(self, "new_keys", set()) else ""
-            t.add_row(sel, g.title + new, g.source.value, f"[{TIER_COLOR[row.tier]}]{row.tier.label}[/]",
-                      r.fg_input or "", row.status, key=key)
+            ok = r.installable
+            if self.hide_incompatible and not ok and not self._row_rank(row)[0] == 0:
+                continue
+            dim = "" if ok else self.color("foreground-muted")
+            sel = ("[✓]" if key in self.selected else "[ ]") if ok else ""
+            title = Text(g.title, style=dim)
+            if key in getattr(self, "new_keys", set()):
+                title.append(" NEW", style=f"bold {self.color('accent')}")
+            tier = self.styled(row.tier.label, TIER_COLOR[row.tier]) if ok else Text(short_reason(r), style=dim)
+            rows.append((key, [sel, title, Text(g.source.value, style=dim), tier,
+                               Text(r.fg_input or "", style=dim), Text(row.status, style=dim)]))
+        hidden = sum(1 for _ in self.rows) - len(rows)
+        t.border_title = f"Games ({len(rows)})" + (f" · {hidden} hidden" if hidden else "")
+        self.fill_table(t, [("sel", ""), ("game", "game"), ("source", "source"), ("tier", "tier"),
+                            ("input", "input"), ("status", "status")], rows)
+
+    def fill_table(self, t: DataTable, cols: list[tuple[str, str]], rows: list[tuple[str, list]],
+                   flex: str = "game") -> None:
+        """Rebuild `t` with columns sized to their content and `flex` taking the rest of the panel width,
+        so there is never a horizontal scrollbar. Keeps the cursor on the same row."""
+        old = t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value if t.row_count else None
+        pad = t.cell_padding * 2
+        widths = {k: max([len(label)] + [Text.from_markup(c).cell_len if isinstance(c, str) else c.cell_len
+                                         for _, cells in rows for c in [cells[i]]])
+                  for i, (k, label) in enumerate(cols)}
+        avail = t.scrollable_content_region.width
+        if avail > 0:
+            rest = avail - sum(w + pad for k, w in widths.items() if k != flex) - pad
+            widths[flex] = max(8, rest)
+        t.clear(columns=True)
+        for k, label in cols:
+            t.add_column(label, key=k, width=widths[k])
+        fi = [k for k, _ in cols].index(flex)
+        for key, cells in rows:
+            c = cells[fi]
+            if isinstance(c, Text) and c.cell_len > widths[flex]:
+                c = c.copy()
+                c.truncate(widths[flex], overflow="ellipsis")
+                cells = cells[:fi] + [c] + cells[fi + 1:]
+            t.add_row(*cells, key=key)
+        keys = [k for k, _ in rows]
+        if old in keys:
+            t.move_cursor(row=keys.index(old), animate=False)
         self.show_notes()
+
+    def refit(self, t: DataTable) -> None:
+        """Column widths follow the panel width."""
+        if self.ctx is None:
+            return
+        if t.id == "library-table":
+            self.refresh_library_table()
+        else:
+            self.refresh_installed_table()
+
+    def action_toggle_hidden(self) -> None:
+        self.hide_incompatible = not self.hide_incompatible
+        self.refresh_library_table()
 
     @on(Input.Changed, "#filter")
     def btn_filter(self) -> None:
@@ -297,7 +412,7 @@ class XemfgApp(App):
         key = t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
         row = self.rows[key]
         if not self.ctx.compat(row.game).installable:
-            self.post_log(f"[yellow]{row.game.title}: {row.tier.label}, not selectable[/]")
+            self.post_log(f"[$warning]{row.game.title}: {row.tier.label}, not selectable[/]")
             return
         self.selected.symmetric_difference_update({key})
         t.update_cell(key, "sel", "[✓]" if key in self.selected else "[ ]")
@@ -342,7 +457,7 @@ class XemfgApp(App):
                     try:
                         chosen = pick(self.ctx, g, for_install=True)
                     except OpError as e:
-                        self.post_log(f"[yellow]{e}[/]")
+                        self.post_log(f"[$warning]{e}[/]")
                         chosen = ""
                     if chosen is None:
                         self.post_log("install cancelled")
@@ -384,10 +499,10 @@ class XemfgApp(App):
                 prep = apply.build(self.ctx, g, req)
                 prep.plan.execute()
                 self._set_status(g.key, "installed")
-                self.post_log(f"[green]installed[/] {g.title}")
+                self.post_log(f"[$success]installed[/] {g.title}")
             except Exception as e:
                 self._set_status(g.key, "failed")
-                self.post_log(f"[red]{g.title}: {e}[/]")
+                self.post_log(f"[$error]{g.title}: {e}[/]")
         self.post_progress(n, n)
         self.selected.clear()
         self.load_library()
@@ -407,45 +522,100 @@ class XemfgApp(App):
     # ---------------------------------------------------------------- installed
     def refresh_installed_table(self) -> None:
         t = self.query_one("#installed-table", DataTable)
-        t.clear()
+        rows = []
         for key, h in sorted(self.health.items(), key=lambda kv: kv[1].title.lower()):
             e = h.entry
             fsr = (h.state.components if h.state else e.components).get("fsr4")
-            t.add_row(h.title, f"[{HEALTH_COLOR.get(h.status, 'white')}]{h.status}[/]", e.set,
-                      describe_fsr4(fsr), e.options.get("proxy", ""), e.launch_target or "-", key=key)
-        self.show_notes()
+            rows.append((key, [Text(h.title), self.styled(h.status, HEALTH_COLOR.get(h.status, "foreground")),
+                               e.set, describe_fsr4(fsr), e.options.get("proxy", ""), e.launch_target or "-"]))
+        t.border_title = f"Installed ({len(rows)})"
+        self.fill_table(t, [("game", "game"), ("health", "health"), ("set", "set"), ("fsr4 dll", "fsr4 dll"),
+                            ("proxy", "proxy"), ("launcher", "launcher")], rows)
 
-    # ---------------------------------------------------------------- notes pane
-    def notes_for_cursor(self) -> list[str] | None:
-        """Full notes of the highlighted row in the active tab; None when the tab has no table rows."""
+    # ---------------------------------------------------------------- details pane
+    def _cursor_key(self) -> tuple[str, str] | None:
         tab = self.query_one(TabbedContent).active
         if tab not in ("library", "installed"):
             return None
         t = self.query_one(f"#{tab}-table", DataTable)
         if t.row_count == 0:
             return None
-        key = t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+        return tab, t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+
+    def details_for_cursor(self) -> tuple[str, Text] | None:
+        """(title, body) for the highlighted row of the active tab; None when there is nothing to show.
+        Every value is added as plain Text, so brackets in it are never read as markup."""
+        at = self._cursor_key()
+        if at is None:
+            return None
+        tab, key = at
+        body = Text()
+        label_w = 11
+
+        def field(label: str, value: str | Text) -> None:
+            body.append(f"{label:<{label_w}}", style=f"bold {self.color('foreground-muted')}")
+            body.append(value if isinstance(value, Text) else Text(value))
+            body.append("\n")
+
+        def bullets(items: list[tuple[str, str]]) -> None:
+            for text, colour in items:
+                body.append("• ", style=self.color(colour))
+                body.append(text, style=self.color(colour) if colour != "foreground" else "")
+                body.append("\n")
+
         if tab == "library":
             row = self.rows.get(key)
             if row is None:
                 return None
-            r = self.ctx.compat(row.game)
-            return r.reasons + r.warnings + r.flags
+            g, r = row.game, self.ctx.compat(row.game)
+            e = self.ctx.registry.get(key)
+            tier = self.styled(row.tier.label, TIER_COLOR[row.tier])
+            if r.reasons:
+                tier.append(f" · {r.reasons[0]}")
+            field("Tier", tier)
+            field("Input", r.fg_input or "-")
+            if e and e.status == "installed":
+                field("Installed", f"xemfg set {e.set} ({e.options.get('proxy', 'dxgi.dll')})")
+                field("FSR4 DLL", describe_fsr4(e.components.get("fsr4")))
+            elif r.optiscaler_proxy:
+                field("Installed", f"OptiScaler {r.optiscaler_version or ''} (not xemfg, {r.optiscaler_proxy})")
+                field("FSR4 DLL", r.cyboman and f"cyboman {r.cyboman}" or "-")
+            else:
+                field("Installed", "no")
+            field("Launcher", f"{g.source.value}" + ("" if g.launch_target else " (set the launch option yourself)"))
+            items = [(x, "foreground") for x in r.reasons[1:]] + [(x, "warning") for x in r.warnings] + \
+                [(x, "foreground-muted") for x in r.flags]
+            bullets(items)
+            body.rstrip()
+            return g.title, body
         h = self.health.get(key)
         if h is None:
             return None
-        return [f"{f.message} (fix: {f.fix})" if f.fix else f.message for f in h.findings if f.level != "info"]
+        e = h.entry
+        fsr = (h.state.components if h.state else e.components).get("fsr4")
+        field("Health", self.styled(h.status, HEALTH_COLOR.get(h.status, "foreground")))
+        field("Set", e.set)
+        field("FSR4 DLL", describe_fsr4(fsr))
+        field("Proxy", e.options.get("proxy", "") or "-")
+        field("Launcher", e.launch_target or "none (set the launch option yourself)")
+        issues = [f for f in h.findings if f.level != "info"]
+        if not issues:
+            body.append("no issues", style=self.color("foreground-muted"))
+        for f in issues:
+            bullets([(f.message, LEVEL_COLOR.get(f.level, "foreground"))])
+            if f.fix:
+                body.append(f"  fix: {f.fix}\n", style=self.color("foreground-muted"))
+        body.rstrip()
+        return h.title, body
 
     def show_notes(self) -> None:
-        box = self.query_one("#notes-box", VerticalScroll)
-        notes = self.notes_for_cursor()
-        if notes is None:
+        box = self.query_one("#details", VerticalScroll)
+        d = self.details_for_cursor()
+        if d is None:
             box.add_class("hidden")
             return
-        # a Text renders literally, so brackets in a note are never read as markup
-        empty = "no issues" if self.query_one(TabbedContent).active == "installed" else "no notes"
-        text = Text("\n".join(notes)) if notes else Text(empty, style="dim")
-        self.query_one("#notes", Static).update(text)
+        box.border_title = d[0]
+        self.query_one("#notes", Static).update(d[1])
         box.remove_class("hidden")
         box.scroll_home(animate=False)
 
@@ -465,7 +635,7 @@ class XemfgApp(App):
         key = t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
         g = self.ctx.library().by_key(key)
         if g is None:
-            self.post_log("[red]that game is no longer listed by its launcher; see Cleanup > Prune[/]")
+            self.post_log("[$error]that game is no longer listed by its launcher; see Cleanup > Prune[/]")
         return g
 
     @on(Button.Pressed, "#repair")
@@ -488,7 +658,7 @@ class XemfgApp(App):
         try:
             choice = pick(self.ctx, g)
         except OpError as e:
-            self.post_log(f"[red]{e}[/]")
+            self.post_log(f"[$error]{e}[/]")
             return
         if choice is None:
             return
@@ -538,7 +708,7 @@ class XemfgApp(App):
         try:
             plan: Plan = build()
         except (OpError, Exception) as e:
-            self.post_log(f"[red]{e}[/]")
+            self.post_log(f"[$error]{e}[/]")
             return
         if plan.empty:
             self.call_from_thread(self.push_screen, PlanScreen(title, plan.render(), ""))
@@ -554,9 +724,9 @@ class XemfgApp(App):
     def execute_plan(self, plan: Plan) -> None:
         try:
             plan.execute(plan.base / ".xemfg" if plan.base and (plan.base / ".xemfg").exists() else None)
-            self.post_log(f"[green]done:[/] {plan.title}")
+            self.post_log(f"[$success]done:[/] {plan.title}")
         except Exception as e:
-            self.post_log(f"[red]{plan.title}: {e}[/]")
+            self.post_log(f"[$error]{plan.title}: {e}[/]")
         self.load_library()
 
     # ---------------------------------------------------------------- updates
@@ -611,7 +781,7 @@ class XemfgApp(App):
             sid, changed = refresh(self.ctx, self.post_log)
             self.ctx.reload_manifest()
         except Exception as e:
-            self.post_log(f"[yellow]manifest refresh failed ({e}); using the local manifest[/]")
+            self.post_log(f"[$warning]manifest refresh failed ({e}); using the local manifest[/]")
         preps, notes = [], []
         for e in self.ctx.registry.active():
             g = self.ctx.library().by_key(e.key)
@@ -620,7 +790,7 @@ class XemfgApp(App):
             try:
                 up = plan_update(self.ctx, g)
             except Exception as ex:
-                self.post_log(f"[red]{e.title}: {ex}[/]")
+                self.post_log(f"[$error]{e.title}: {ex}[/]")
                 continue
             notes += [f"{e.title}: {x}" for x in up.skipped]
             if up.prep is not None:
@@ -643,9 +813,9 @@ class XemfgApp(App):
         for p in plans:
             try:
                 p.execute()
-                self.post_log(f"[green]done:[/] {p.title}")
+                self.post_log(f"[$success]done:[/] {p.title}")
             except Exception as e:
-                self.post_log(f"[red]{p.title}: {e}[/]")
+                self.post_log(f"[$error]{p.title}: {e}[/]")
         self.load_library()
         self.quiet_check()
 
@@ -689,7 +859,7 @@ class XemfgApp(App):
             if ok:
                 for it in items:
                     (repoint if it.relocated_to else drop)(self.ctx, it)
-                self.post_log("[green]pruned[/]")
+                self.post_log("[$success]pruned[/]")
                 self.load_library()
 
         self.call_from_thread(self.push_screen, PlanScreen("Prune the registry?", text), after)
@@ -699,14 +869,14 @@ class XemfgApp(App):
         parts = []
         new = [self.rows[k].game.title for k in getattr(self, "new_keys", set()) if k in self.rows]
         if new:
-            parts.append(f"[bold cyan]New games:[/] {', '.join(new)}")
+            parts.append(f"[bold $accent]New games:[/] {', '.join(new)}")
         bad = [h.title for h in self.health.values() if h.status in ("broken", "missing", "drifted")]
         if bad:
-            parts.append(f"[bold red]Needs attention:[/] {', '.join(bad)} (Installed tab)")
+            parts.append(f"[bold $error]Needs attention:[/] {', '.join(bad)} (Installed tab)")
         old = [h.title for h in self.health.values() if h.status == "outdated"]
         r = self.check_result
         if old or (r and not r.up_to_date and not r.error):
-            parts.append("[bold cyan]Update available[/] (Updates tab)")
+            parts.append("[bold $accent]Update available[/] (Updates tab)")
         b = self.query_one("#banner", Static)
         b.update("   ".join(parts))
         b.set_class(not parts, "hidden")

@@ -149,11 +149,11 @@ async def test_bottom_pane_shows_highlighted_games_full_notes(world, tmp_path):
     world.faugus_game("a", "Alpha", tmp_path / "A", TIER_FILES["native"])
     world.faugus_game("b", "Beta", tmp_path / "B", TIER_FILES["upscaler"])
     app = XemfgApp(factory(world, f))
-    async with app.run_test(size=(100, 40)) as pilot:
+    async with app.run_test(size=(100, 30)) as pilot:
         await settle(app, pilot)
         t = app.query_one("#library-table")
         assert "notes" not in [str(c.label) for c in t.columns.values()]
-        log = app.query_one("#log")
+        log, box = app.query_one("#log"), app.query_one("#details")
         assert not log.display  # no messages yet: no empty log box
 
         def pane():
@@ -163,20 +163,53 @@ async def test_bottom_pane_shows_highlighted_games_full_notes(world, tmp_path):
         beta = app.ctx.compat(app.rows["faugus:b"].game)
         long = "[x] " + "a very long note that would never fit in a table column " * 3 + "[/] end"
         beta.flags.append(long)
-        assert app.query_one("#notes-box").display
-        assert "game ships FSR frame generation" in pane()  # Alpha is first and highlighted
+        assert box.display and box.border_title == "Alpha"  # Alpha is first and highlighted
+        assert "Native FG · game ships FSR frame generation" in pane()
         t.focus()
         await pilot.press("down")  # the pane follows the cursor
         await pilot.pause()
-        assert pane().split("\n") == beta.reasons + beta.warnings + beta.flags
-        assert long in pane()
+        assert box.border_title == "Beta"
+        lines = pane().split("\n")
+        assert lines[0].split() [:3] == ["Tier", "Upscaler", "only"] and beta.reasons[0] in lines[0]
+        assert any(ln.startswith("Input") and "Upscaler" in ln for ln in lines)
+        assert any(ln.startswith("Launcher") and "faugus" in ln for ln in lines)
+        for note in beta.warnings + beta.flags:
+            assert "• " + note in lines
         await pilot.press("up")
         await pilot.pause()
         assert long not in pane()
 
         app.post_log("hello")
         await pilot.pause()
-        assert log.display and app.query_one("#notes-box").display  # the log appears under the notes
+        assert log.display and box.display  # the log appears under the details
         await pilot.click("#--content-tab-updates")
         await pilot.pause()
-        assert not app.query_one("#notes-box").display  # no table on this tab
+        assert not box.display  # no table on this tab
+
+
+async def test_library_rows_order_dim_and_hide(world, tmp_path):
+    from fakes import make_pe
+
+    m, f = setup_sets(world)
+    world.faugus_game("a", "Alpha", tmp_path / "A", TIER_FILES["upscaler"])
+    world.faugus_game("z", "Zulu", tmp_path / "Z", TIER_FILES["native"])
+    world.faugus_game("old", "Aardvark", tmp_path / "O", {}, exe_bytes=make_pe(0x14C, size=4096))
+    world.faugus_game("ac", "Anticheat " + "Long Title " * 8, tmp_path / "AC",
+                      {**TIER_FILES["native"], "EasyAntiCheat/x.txt": b"x"})
+    app = XemfgApp(factory(world, f))
+    async with app.run_test(size=(100, 30)) as pilot:
+        await settle(app, pilot)
+        t = app.query_one("#library-table")
+        keys = [r.key.value for r in t.ordered_rows]
+        assert keys[:2] == ["faugus:z", "faugus:a"]  # compatible first, then the rest
+        assert set(keys[2:]) == {"faugus:old", "faugus:ac"}
+        assert t.get_cell("faugus:old", "sel") == ""  # cannot be selected: no checkbox
+        assert str(t.get_cell("faugus:old", "tier")) == "✗ 32-bit exe"
+        assert str(t.get_cell("faugus:ac", "tier")) == "✗ anti-cheat"
+        assert t.max_scroll_x == 0  # columns fit the panel: no horizontal scrollbar at 100 columns
+        assert not app.query_one("#progress").display  # nothing running
+        await pilot.press("h")
+        assert [r.key.value for r in t.ordered_rows] == ["faugus:z", "faugus:a"]
+        assert "2 hidden" in str(t.border_title)
+        await pilot.press("h")
+        assert t.row_count == 4
