@@ -145,7 +145,7 @@ def scan(new: bool = typer.Option(False, "--new", help="only games added since t
             status = f"xemfg {e.set}"
         elif r.optiscaler_proxy:
             status = "OptiScaler (not by xemfg)"
-        notes = "; ".join(r.reasons + r.warnings + r.flags)
+        notes = "; ".join(r.reasons + r.warnings + r.flags + _fsr4_summary(ctx, g, r))
         mark = "[bold cyan]NEW[/]" if g.key in lib.new_keys else ""
         t.add_row(mark, g.title, g.source.value + (f":{g.appid}" if g.appid else ""),
                   f"[{TIER_STYLE[r.tier]}]{r.tier.label}[/]", r.fg_input or "", status, notes)
@@ -156,6 +156,43 @@ def scan(new: bool = typer.Option(False, "--new", help="only games added since t
         err.print(f"[yellow]{e}[/]")
     if lib.removed:
         con.print(f"gone since the last scan: {', '.join(x['title'] for x in lib.removed)}")
+
+
+def _fsr4_summary(ctx: Context, g: Game, r) -> list[str]:
+    """Short FSR4 note for scan: only for games where an FSR4 DLL is present or OptiScaler is installed."""
+    from .core.ops.fsr4status import report
+
+    if g.exe is None or not r.installable and not r.optiscaler_proxy:
+        return []
+    try:
+        rep = report(ctx, g)
+    except Exception as e:  # never let a bad file break the library listing
+        return [f"FSR4: could not inspect ({e})"]
+    return [rep.summary] if any(a.runtime.dll for a in rep.apis) else []
+
+
+def _print_fsr4(ctx: Context, g: Game) -> None:
+    from .core.ops.fsr4status import report
+
+    rep = report(ctx, g)
+    style = {"current": "green", "older": "cyan", "wrong-gpu": "red", "cyboman": "green", "none": "yellow"}
+    con.print(f"  gpu       {rep.gpu_note}")
+    for w in rep.warnings:
+        con.print(f"            [yellow]{w}[/]")
+    for a in rep.apis:
+        d = a.runtime.dll
+        where = f" [{d.rel}]" if d else ""
+        con.print(f"  fsr4 {a.api:4} [{style.get(a.verdict, 'white')}]{a.message}[/]{where}")
+        con.print(f"            why this file: {a.runtime.how}", markup=False)
+    for d in rep.unused:
+        con.print(f"            game's own {d.rel}: {d.label()} - not loaded while OptiScaler has its own copy",
+                  markup=False)
+    for d in rep.dlls:
+        if d.role == "combined":
+            con.print(f"            {d.rel}: {d.label()}; left alone (it has no FSR4)", markup=False)
+    if rep.driver_note:
+        con.print(f"            {rep.driver_note}", markup=False)
+    con.print(f"            {rep.log_note}", markup=False)
 
 
 # ---------------------------------------------------------------------------------------- install
@@ -258,6 +295,8 @@ def status(game: Optional[str] = typer.Argument(None)):
         con.print(f"            {x}")
     launch = current_launch_text(ctx, g) if g.launch_target else None
     con.print(f"  launch    {launch!r}" if launch is not None else "  launch    (no launcher entry)")
+    if g.exe:
+        _print_fsr4(ctx, g)
     st = GameState.load(g.exe.parent) if g.exe else None
     e = ctx.registry.get(g.key)
     if st is None:
@@ -318,6 +357,14 @@ def check():
         con.print("  run `xemfg update --all` (refreshes the manifest first)")
     for title, s in r.outdated_installs:
         con.print(f"  outdated install: {title} on {s}")
+    from .core.ops.fsr4status import report
+
+    for g in installed_games(ctx):
+        if g.exe is None:
+            continue
+        for a in report(ctx, g).apis:
+            if a.verdict in ("older", "wrong-gpu", "none"):
+                con.print(f"  FSR4 {g.title} ({a.api}): {a.message}")
 
 
 @manifest_app.command("refresh")
@@ -521,6 +568,53 @@ def launch_opts(game: Optional[str] = typer.Argument(None),
         con.print(f"  {line}", markup=False)
     con.print("Steam:")
     con.print(f"  {steam}", markup=False)
+
+
+@app.command()
+@guarded
+def gpu(pick: bool = typer.Option(False, "--pick", help="choose the GPU games run on (laptops with two GPUs)"),
+        override: Optional[str] = typer.Option(None, "--override", help="treat the GPU as this profile (see the list)"),
+        clear_override: bool = typer.Option(False, "--clear-override", help="use the detected GPU again")):
+    """Show the detected GPU(s) and what each can run; pick one or override the detection."""
+    from .core.gpu import PROFILES, override_warning
+
+    ctx = ctx_for()
+    gpus = ctx.gpus()
+    if pick:
+        if not gpus:
+            fail("no GPU found under /sys/class/drm")
+        i = ctx.ui.pick("Which GPU do your games run on?", [x.describe() for x in gpus])
+        if i is None:
+            fail("no GPU chosen")
+        ctx.config.gpu = gpus[i].slot
+        ctx.save_config()
+    if clear_override:
+        ctx.config.gpu_override = ""
+        ctx.save_config()
+    if override:
+        if override not in PROFILES:
+            fail(f"unknown profile {override} (one of {', '.join(PROFILES)})")
+        ctx.config.gpu_override = override
+        ctx.save_config()
+    for x in gpus:
+        con.print(f"  {x.describe()}", markup=False)
+    sel = ctx.gpu_selection()
+    if sel.gpu is None:
+        con.print(f"[yellow]{sel.reason}[/]")
+        return
+    p = sel.gpu.profile
+    con.print(f"games run on: {sel.gpu.card} ({sel.reason})")
+    con.print(f"  profile   {p.key}: {p.label}")
+    model = {None: "none"}.get(p.model, p.model)
+    con.print(f"  FSR4      model {model}" + (f", {p.support}" if p.support else ""))
+    con.print(f"  cyboman   {p.cyboman or 'not offered'}")
+    if p.note:
+        con.print(f"  note      {p.note}")
+    if (w := override_warning(sel.gpu)):
+        err.print(f"[yellow]warning:[/] {w}")
+    if not sel.gpu.known and not sel.gpu.override:
+        con.print("  xemfg does not know this GPU and offers no FSR4 DLL choices for it. If you know what it is, "
+                  f"`xemfg gpu --override <profile>` (profiles: {', '.join(k for k in PROFILES if k != 'other')}).")
 
 
 @config_app.command("add-root")

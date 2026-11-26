@@ -226,8 +226,7 @@ def analyze(game: Game, optiscaler_hashes: set[str] | None = None,
     if r.optiscaler_proxy:
         r.flags.append(f"OptiScaler present as {r.optiscaler_proxy}" +
                        (f" ({r.optiscaler_version})" if r.optiscaler_version else ""))
-    if r.cyboman:
-        r.flags.append(f"cyboman FSR4 DLL: {r.cyboman}")
+    # the FSR4 DLL itself is reported by ops/fsr4status (which file runs, version, GPU fit)
     return r
 
 

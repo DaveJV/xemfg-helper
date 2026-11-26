@@ -7,7 +7,8 @@ from pathlib import Path
 from .fsutil import sha256_or_none
 
 OPTISCALER_VERSION = re.compile(rb"OptiScaler v(\d+\.\d+\.\d+[\w.\-]*)(?: \(([0-9a-f]{6,})\))?")
-CYBOMAN = re.compile(rb"([\w.]+-(?:exact|lossy)(?:-r\d+)?-cyboman)")
+# cyboman's version names: 4.1.2-exact-r3-cyboman, 4.1.2l-lossy-igpu-r2-cyboman, 4.1.1-igpu-lossy2-cyboman ...
+CYBOMAN = re.compile(rb"(\d+\.\d+\.\d+l?(?:-[a-z0-9]+)*-cyboman)(?![a-z0-9-])", re.I)
 
 KIND_LABELS = {
     "optiscaler": "OptiScaler",
@@ -69,4 +70,4 @@ def optiscaler_version(path: Path) -> str | None:
 
 def cyboman_build(path: Path) -> str | None:
     m = CYBOMAN.search(_read(path))
-    return m.group(1).decode() if m else None
+    return m.group(1).decode().lower() if m else None

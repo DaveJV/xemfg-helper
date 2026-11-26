@@ -83,6 +83,6 @@ def setup_sets(world, current: str = "t1") -> tuple[Manifest, FakeFetcher]:
 def make_ctx(world, fetcher, ui=None, steam_running=False) -> Context:
     flag = {"steam": steam_running}
     ctx = Context(world.paths, world.locations(), ui or ScriptedUI(), lambda: fetcher,
-                  steam_running_fn=lambda: flag["steam"], faugus_running_fn=lambda: False)
+                  steam_running_fn=lambda: flag["steam"], faugus_running_fn=lambda: False, sysfs=world.sysfs)
     ctx.steam_flag = flag  # type: ignore[attr-defined]
     return ctx

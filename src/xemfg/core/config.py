@@ -17,6 +17,8 @@ class Config:
     default_proxy: str = "dxgi.dll"
     fsr4: str = "exact-l"
     gpu_family: str = "rx7000"
+    gpu: str = ""  # PCI address of the GPU games run on, when there are several (`xemfg gpu --pick`)
+    gpu_override: str = ""  # GPU profile to use instead of the detected one (`xemfg gpu --override`)
     # chosen exe per game key when exe detection was a tie
     exe_overrides: dict[str, str] = field(default_factory=dict)
 

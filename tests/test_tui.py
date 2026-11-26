@@ -8,7 +8,7 @@ from fakeset import setup_sets
 
 def factory(world, fetcher):
     return lambda ui: Context(world.paths, world.locations(), ui, lambda: fetcher,
-                              steam_running_fn=lambda: False, faugus_running_fn=lambda: False)
+                              steam_running_fn=lambda: False, faugus_running_fn=lambda: False, sysfs=world.sysfs)
 
 
 async def settle(app, pilot):

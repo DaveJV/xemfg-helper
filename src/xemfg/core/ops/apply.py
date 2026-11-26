@@ -123,6 +123,8 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
 
     plan = Plan(f"{req.mode} {xset.id} -> {game.title}", base=exe_dir)
     plan.warnings += warnings
+    if req.mode == "install":
+        _note_fsr4(ctx, game, plan)
     ts = _timestamp()
     backup_dir = f"{STATE_DIR}/backups/{ts}"
 
@@ -213,6 +215,21 @@ def build(ctx: Context, game: Game, req: Request, dry_run: bool = False) -> Prep
 
 class _NotCached(Exception):
     pass
+
+
+def _note_fsr4(ctx: Context, game: Game, plan: Plan) -> None:
+    """What the game ships and which GPU xemfg sees (read-only; shown in the plan)."""
+    from .. import fsr4
+
+    sel = ctx.gpu_selection()
+    plan.notes.append(f"GPU: {sel.gpu.describe()}" if sel.gpu else f"GPU: {sel.reason}")
+    for d in fsr4.scan_game(game.exe.parent, game.install_dir, ctx.manifest.cyboman_by_hash()):
+        if d.location != "game":
+            continue
+        if d.role == "upscaler":
+            plan.notes.append(f"the game ships {d.rel}: {d.label()}; OptiScaler runs its own copy instead")
+        elif d.role == "combined":
+            plan.notes.append(f"the game ships {d.rel}: {d.label()}; left alone, FSR4 comes from OptiScaler's copy")
 
 
 def _cache_ready(cache, opts: Options) -> bool:

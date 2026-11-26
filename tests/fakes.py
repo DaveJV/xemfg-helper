@@ -48,9 +48,33 @@ class World:
         self.launch_opts: dict[str, str] = {}
         self.compat: dict[str, str] = {"0": "proton_experimental"}
         self.faugus_entries: list[dict] = []
+        self.sysfs = tmp / "sys"
+        (self.sysfs / "class/drm").mkdir(parents=True)
         self.steam_root.joinpath("steamapps").mkdir(parents=True)
         self.write_steam()
         self.write_faugus()
+
+    # ---- GPUs (sysfs)
+    def add_gpu(self, card: int, slot: str, vendor: int, device: int, gc: tuple[int, int, int] | None = None,
+                boot_vga: bool = True, driver: str = "amdgpu") -> None:
+        dev = self.sysfs / "devices/pci0000:00" / slot
+        dev.mkdir(parents=True)
+        (dev / "vendor").write_text(f"{vendor:#06x}\n")
+        (dev / "device").write_text(f"{device:#06x}\n")
+        (dev / "boot_vga").write_text("1\n" if boot_vga else "0\n")
+        drv = self.sysfs / "bus/pci/drivers" / driver
+        drv.mkdir(parents=True, exist_ok=True)
+        (dev / "driver").symlink_to(drv)
+        if gc:
+            ip = dev / "ip_discovery/die/0/GC/0"
+            ip.mkdir(parents=True)
+            for n, v in zip(("major", "minor", "revision"), gc):
+                (ip / n).write_text(f"{v}\n")
+        card_dir = self.sysfs / f"class/drm/card{card}"
+        card_dir.mkdir()
+        (card_dir / "device").symlink_to(dev)
+        # connector nodes look like cards but are not
+        (self.sysfs / f"class/drm/card{card}-DP-1").mkdir()
 
     # ---- locations
     def locations(self) -> LauncherLocations:

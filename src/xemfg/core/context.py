@@ -77,6 +77,8 @@ class Context:
     _registry: Registry | None = None
     _fetcher: Fetcher | None = None
     _compat: dict[str, CompatReport] = field(default_factory=dict)
+    sysfs: Path = Path("/sys")
+    _gpus: list | None = None
 
     def __post_init__(self):
         if self.config is None:
@@ -117,6 +119,19 @@ class Context:
             if snapshot:
                 library_mod.diff_snapshot(self._library, self.paths.library_snapshot)
         return self._library
+
+    def gpus(self) -> list:
+        from .gpu import detect
+
+        if self._gpus is None:
+            self._gpus = detect(self.sysfs)
+        return self._gpus
+
+    def gpu_selection(self):
+        """The GPU games run on (configured, or the only one), with the user's override applied."""
+        from .gpu import select
+
+        return select(self.gpus(), self.config.gpu, self.config.gpu_override)
 
     def compat(self, game: Game) -> CompatReport:
         if game.key not in self._compat:

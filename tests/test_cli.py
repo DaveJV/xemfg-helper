@@ -14,7 +14,7 @@ runner = CliRunner()
 def patch(monkeypatch, world, fetcher):
     def default(ui):
         return Context(world.paths, world.locations(), ui, lambda: fetcher,
-                       steam_running_fn=lambda: False, faugus_running_fn=lambda: False)
+                       steam_running_fn=lambda: False, faugus_running_fn=lambda: False, sysfs=world.sysfs)
     monkeypatch.setattr(Context, "default", staticmethod(default))
 
 
