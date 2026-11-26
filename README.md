@@ -102,21 +102,49 @@ Open a new terminal afterwards. Ubuntu 22.04 and Debian 11 are too old (Python 3
 
 ## Usage
 
-```
-xemfg                       open the terminal UI
-xemfg scan                  list your games and which ones can use XeMFG
-xemfg install ff16          install into a game (by name or Steam appid); asks which FSR4 DLL
-xemfg list                  your installs and their health
-xemfg check                 installed versions against the newest
-xemfg update --all          update everything that isn't pinned
-xemfg fsr4 list ff16        the FSR4 DLLs this game can use on your GPU
-xemfg fsr4 set ff16 cyboman:exact
-xemfg rollback ff16         go back to what was installed before
-xemfg uninstall ff16        remove everything xemfg added
-xemfg doctor                look for problems in every install
+### Quick start
+
+```bash
+xemfg
 ```
 
-`xemfg --help` and `xemfg <command> --help` list everything else.
+Opens the terminal UI, the easiest way to set up and manage your games.
+
+### Command line
+
+You can also run everything directly. Games can be given by title, short name or Steam appid. The examples use `ff16`, short for Final Fantasy XVI.
+
+**Install**
+
+```bash
+xemfg scan           # find your games and check compatibility
+xemfg install ff16   # install XeMFG and choose an FSR4 DLL
+```
+
+**Stay up to date**
+
+```bash
+xemfg list           # show installed games and their health
+xemfg check          # compare installed and latest versions
+xemfg update --all   # update everything that isn't pinned
+```
+
+**FSR4 DLLs**
+
+```bash
+xemfg fsr4 list ff16                # show DLLs available for this game
+xemfg fsr4 set ff16 cyboman:exact   # switch to a different DLL
+```
+
+**Fix or remove**
+
+```bash
+xemfg doctor           # check all installs for problems
+xemfg rollback ff16    # restore the previous version
+xemfg uninstall ff16   # remove XeMFG from a game
+```
+
+Run `xemfg --help` for the full command list.
 
 ## Credits
 
