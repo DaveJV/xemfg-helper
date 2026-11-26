@@ -144,7 +144,7 @@ class XemfgApp(App):
     .bar Button { margin-right: 1; }
     .bar Input { width: 1fr; min-width: 16; }
     DataTable { height: 1fr; }
-    #log { height: 9; border-top: solid $primary; }
+    #log { height: 5; border-top: solid $primary; }
     #progress { width: 22; }
     #dialog { width: 90%; height: 85%; border: thick $primary; background: $surface; padding: 1; }
     #dialog-title { text-style: bold; }
@@ -269,7 +269,7 @@ class XemfgApp(App):
             hay = f"{g.title} {row.tier.label} {g.source.value} {row.status}".lower()
             if flt and flt not in hay:
                 continue
-            sel = "[x]" if key in self.selected else "[ ]"
+            sel = "[✓]" if key in self.selected else "[ ]"
             new = " [bold cyan]NEW[/]" if key in getattr(self, "new_keys", set()) else ""
             notes = "; ".join(r.reasons + r.warnings + r.flags)
             t.add_row(sel, g.title + new, g.source.value, f"[{TIER_COLOR[row.tier]}]{row.tier.label}[/]",
@@ -289,7 +289,7 @@ class XemfgApp(App):
             self.post_log(f"[yellow]{row.game.title}: {row.tier.label}, not selectable[/]")
             return
         self.selected.symmetric_difference_update({key})
-        t.update_cell(key, "sel", "[x]" if key in self.selected else "[ ]")
+        t.update_cell(key, "sel", "[✓]" if key in self.selected else "[ ]")
 
     @on(Button.Pressed, "#select-native")
     def btn_select_native(self) -> None:

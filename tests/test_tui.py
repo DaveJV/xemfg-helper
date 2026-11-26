@@ -118,3 +118,27 @@ async def test_tui_asks_for_a_free_proxy_name(world, tmp_path):
         await pilot.click("#ok")
         await settle(app, pilot)
     assert (tmp_path / "A/version.dll").exists() and (tmp_path / "A/dxgi.dll").read_bytes() == RESHADE_DLL
+
+
+async def test_selected_row_checkbox_renders(world, tmp_path):
+    """DataTable parses str cells as markup, so '[x]' rendered as an empty cell."""
+    from textual.widgets._data_table import default_cell_formatter
+
+    def shown(t, key):
+        return default_cell_formatter(t.get_cell(key, "sel")).plain
+
+    m, f = setup_sets(world)
+    world.faugus_game("a", "Alpha", tmp_path / "A", TIER_FILES["native"])
+    app = XemfgApp(factory(world, f))
+    async with app.run_test(size=(160, 50)) as pilot:
+        await settle(app, pilot)
+        t = app.query_one("#library-table")
+        assert shown(t, "faugus:a") == "[ ]"
+        t.focus()
+        await pilot.press("space")  # toggle: update_cell
+        assert app.selected == {"faugus:a"}
+        assert shown(t, "faugus:a") == "[✓]"
+        await pilot.press("space")
+        assert shown(t, "faugus:a") == "[ ]"
+        await pilot.click("#select-native")  # full refresh: add_row
+        assert shown(t, "faugus:a") == "[✓]"
