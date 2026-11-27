@@ -92,6 +92,8 @@ def check_entry(ctx: Context, e: Entry) -> Health:
         i = ini_mod.Ini(ini_mod.read_text(ip))
         for sec, kv in st.ini.keys.items():
             for k, v in kv.items():
+                if (sec.lower(), k.lower()) in ini_mod.USER_PREFERENCES:
+                    continue
                 cur = i.get(sec, k)
                 if not ini_mod.values_equal(cur, v):
                     h.add("drifted", f"ini [{sec}] {k} = {cur} (xemfg set {v})", f"xemfg repair {_q(e)}")

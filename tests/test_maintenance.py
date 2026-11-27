@@ -38,6 +38,27 @@ def test_healthy_after_install(installed):
     assert h.status == "ok", h.findings
 
 
+def test_health_and_repair_preserve_frame_generation_preferences(installed):
+    _, _, _, ctx, game, root = installed
+    path = root / "OptiScaler.ini"
+    settings = ini.Ini(ini.read_text(path))
+    settings.set("XeFG", "FramerateTargetDMFG", "180")
+    settings.set("XeFG", "DynamicMFG", "false")
+    settings.set("FSR", "UpscalerIndex", "auto")
+    ini.write_text(path, settings.text())
+    assert statuses(ctx)["Verify Me"].status == "ok"
+
+    settings.set("FrameGen", "FGOutput", "auto")
+    ini.write_text(path, settings.text())
+    assert statuses(ctx)["Verify Me"].status == "drifted"
+    assert ops.repair(ctx, game, yes=True).ok
+    repaired = ini.Ini(ini.read_text(path))
+    assert repaired.get("FrameGen", "FGOutput") == "XeFG"
+    assert repaired.get("XeFG", "FramerateTargetDMFG") == "180"
+    assert repaired.get("XeFG", "DynamicMFG") == "false"
+    assert repaired.get("FSR", "UpscalerIndex") == "auto"
+
+
 def test_steam_verify_wipe_doctor_then_repair(installed):
     world, m, f, ctx, g, root = installed
     # Steam verify deletes unknown DLLs and resets files it owns

@@ -13,6 +13,12 @@ from pathlib import Path
 SECTION = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 KEYLINE = re.compile(r"^(\s*)([^=;#\[\s][^=]*?)(\s*=\s*)(.*?)(\s*)$")
 
+USER_PREFERENCES = {
+    ("xefg", "dynamicmfg"),
+    ("xefg", "frameratetargetdmfg"),
+    ("fsr", "upscalerindex"),
+}
+
 
 def read_text(path: Path) -> str:
     with open(path, newline="", encoding="utf-8", errors="surrogateescape") as f:

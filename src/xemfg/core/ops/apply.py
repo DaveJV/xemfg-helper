@@ -92,7 +92,7 @@ def resolve_options(ctx: Context, game: Game, req: Request, state: GameState | N
         profile_key = gpu_profile_for(ctx, choice).key
     return Options(
         proxy=proxy, fg_input=fg_input, fsr4=str(choice), gpu_family=family,
-        dmfg_target=req.dmfg_target or (rec.dmfg_target if rec else cfg.dmfg_target),
+        dmfg_target=req.dmfg_target if req.dmfg_target is not None else (rec.dmfg_target if rec else cfg.dmfg_target),
         allow_anticheat=req.allow_anticheat or (rec.allow_anticheat if rec else False),
         gpu_profile=profile_key,
     )
@@ -625,6 +625,14 @@ def _plan_ini(plan, exe_dir, state, new_state, backend, opts, req, template, bac
 
     before = ini_mod.Ini(base_text)
     wanted = copy.deepcopy(swap_only if swap_only is not None else owned)
+    if exists and not req.reset_ini:
+        for sec, kv in wanted.items():
+            for key in list(kv):
+                if (sec.lower(), key.lower()) in ini_mod.USER_PREFERENCES:
+                    if not fresh or before.get(sec, key) is not None:
+                        del kv[key]
+    if req.dmfg_target is not None:
+        wanted.setdefault("XeFG", {})["FramerateTargetDMFG"] = str(opts.dmfg_target)
     if swap_only is not None:  # the watermark default, once, only over 'auto'
         wm = backend.fresh_install_ini_defaults(opts).get("FSR", {}).get("Fsr4EnableWatermark")
         cur = before.get("FSR", "Fsr4EnableWatermark")
